@@ -56,3 +56,9 @@ chmod 600 /home/nuc/.ssh/authorized_keys
 2. Проверить MPD видит downloads (mpc ls / mpc update) и может add файлы.
 3. Полный цикл: add magnet → play → веб-UI → управление.
 4. `hermes verify` на NUC.
+
+## Решения (2026-11-02, финал)
+- Каноничный код — GitHub **druner-ai/torrent-streamer** (private). NUC тянет через `git pull`.
+- Платформа — **NUC** (порт на другие платформы — потом).
+- Доступ к веб-UI — **локальная сеть** (http://<ip NUC>:8000), Tailscale не нужен.
+- **Spotify Connect (опционально, потом):** librespot/raspotify как второй источник (320 kbps, вывод в USB-DAC, конфликт с MPD за ALSA решать взаимоисключением). Issue #9.

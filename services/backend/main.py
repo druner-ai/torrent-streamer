@@ -203,16 +203,23 @@ def player():
 @app.post("/api/player/{cmd}")
 def player_cmd(cmd: str):
     def do(mc):
-        if cmd == "play": mc.play()
-        elif cmd == "pause": mc.pause(1)
-        elif cmd == "next": mc.next()
-        elif cmd == "prev": mc.previous()
-        elif cmd == "stop": mc.stop()
+        if cmd == "play":
+            mc.play()
+        elif cmd == "pause":
+            mc.pause(1)
+        elif cmd == "next":
+            mc.next()
+        elif cmd == "prev":
+            mc.previous()
+        elif cmd == "stop":
+            mc.stop()
         elif cmd.startswith("vol"):
             mc.setvol(int(cmd[3:]))
-        else: raise HTTPException(400, "неизвестная команда")
+        else:
+            raise HTTPException(400, "неизвестная команда")
     mpd_cmd(do)
     return {"ok": True, "cmd": cmd}
 
-# фронт
-app.mount("/", StaticFiles(directory="/app/static", html=True), name="static")
+# фронт (путь относительно файла — работает и в Docker, и локально)
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
