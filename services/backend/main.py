@@ -2,6 +2,7 @@
 torrent-streamer backend — связывает qbittorrent (download) + MPD (play) + каталог (SQLite).
 Вход: magnet/ссылка → альбом с треками → play в MPD → управление.
 """
+import contextlib
 import os
 import sqlite3
 import time
@@ -9,8 +10,8 @@ from pathlib import Path
 
 import requests
 from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from mpd import MPDClient
 from pydantic import BaseModel
 
@@ -90,14 +91,10 @@ def mpd_cmd(fn):
     try:
         return fn(c)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             c.close()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             c.disconnect()
-        except Exception:
-            pass
 
 # ---------- API ----------
 class AddReq(BaseModel):
@@ -197,7 +194,7 @@ def player():
                 "duration": st.get("duration"), "volume": st.get("volume")}
     try:
         return mpd_cmd(get)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — catch-all на границе API
         return {"state": "error", "error": str(e)}
 
 @app.post("/api/player/{cmd}")
