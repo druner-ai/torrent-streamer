@@ -1,0 +1,24 @@
+# Torrent-streamer — self-hosted аудио-стример с торрентов.
+# Развёртывание: ./scripts/install.sh && docker compose up -d
+#
+# Downloader (qbittorrent-nox) и плеер (MPD) запускаются на ХОСТЕ (не здесь):
+#   - qbittorrent-nox — качает торренты (sequential), работает за CGNAT (18 MiB/s проверено).
+#   - MPD — bit-perfect вывод через ALSA/USB-DAC.
+# Backend (FastAPI) работает в Docker с network_mode: host — ему нужен доступ к
+#   MPD (127.0.0.1:6600) и qbittorrent WebUI (127.0.0.1:8080) на хосте.
+
+services:
+  backend:
+    build: ./services/backend
+    container_name: torrent-streamer-backend
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - QBT_URL=http://127.0.0.1:8080
+      - QBT_USER=admin
+      - QBT_PASS=${QBT_PASS:-adminadmin}
+      - MPD_HOST=127.0.0.1
+      - MPD_PORT=6600
+      - DB_PATH=/data/catalog.db
+    volumes:
+      - ./data:/data

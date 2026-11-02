@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>torrent-streamer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background:#0f1115; color:#e6e8ec; }
+  header { padding:14px 20px; border-bottom:1px solid #23262d; position:sticky; top:0; background:#0f1115; }
+  h1 { font-size:18px; margin:0 0 10px; }
+  .add { display:flex; gap:8px; }
+  .add input { flex:1; padding:10px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
+  .add button, .ctrl button, .album button { padding:10px 16px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
+  .add button:hover, .ctrl button:hover, .album button:hover { background:#3f7dff; }
+  main { padding:20px; max-width:900px; margin:0 auto; }
+  .player { position:sticky; bottom:0; background:#161a20; border-top:1px solid #23262d; padding:12px 20px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .now { flex:1; min-width:150px; }
+  .now .t { font-weight:600; }
+  .now .s { color:#8b93a1; font-size:13px; }
+  .ctrl { display:flex; gap:8px; align-items:center; }
+  .album { border:1px solid #23262d; border-radius:10px; padding:14px 16px; margin-bottom:10px; background:#161a20; }
+  .album .nm { font-weight:600; margin-bottom:4px; }
+  .album .meta { color:#8b93a1; font-size:13px; }
+  .bar { height:5px; background:#23262d; border-radius:3px; margin-top:8px; overflow:hidden; }
+  .bar div { height:100%; background:#2f6fed; }
+  .tracks { margin-top:10px; display:none; border-top:1px solid #23262d; padding-top:10px; }
+  .tracks.open { display:block; }
+  .track { padding:3px 0; color:#b6bcc8; font-size:14px; }
+  input[type=range] { width:90px; }
+  .status { font-size:12px; padding:3px 8px; border-radius:5px; background:#23262d; }
+  .status.downloading { background:#1e3a2a; color:#5fd08a; }
+  .status.complete { background:#1e2f4a; color:#7fb4ff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>torrent-streamer</h1>
+  <div class="add">
+    <input id="link" placeholder="magnet-ссылка или URL торрента">
+    <button onclick="add()">Добавить</button>
+  </div>
+</header>
+<main id="albums"></main>
+
+<div class="player">
+  <div class="now">
+    <div class="t" id="now-title">—</div>
+    <div class="s" id="now-state">нет воспроизведения</div>
+  </div>
+  <div class="ctrl">
+    <button onclick="cmd('prev')">⏮</button>
+    <button onclick="cmd('play')">▶</button>
+    <button onclick="cmd('pause')">⏸</button>
+    <button onclick="cmd('next')">⏭</button>
+    <input type="range" min="0" max="100" value="100" oninput="cmd('vol'+this.value)">
+  </div>
+</div>
+
+<script>
+async function api(path, opts={}) {
+  const r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  if (!r.ok) { const e = await r.text(); throw new Error(e); }
+  return r.json();
+}
+async function add() {
+  const link = document.getElementById('link').value.trim();
+  if (!link) return;
+  try {
+    const r = await api('/api/add', {method:'POST', body: JSON.stringify({link})});
+    document.getElementById('link').value='';
+    alert('Добавлено: ' + r.name + ' (' + r.tracks + ' треков)');
+    load();
+  } catch(e) { alert('Ошибка: ' + e.message); }
+}
+async function load() {
+  try {
+    const albums = await api('/api/albums');
+    document.getElementById('albums').innerHTML = albums.map(a => `
+      <div class="album">
+        <div class="nm">${esc(a.name)}</div>
+        <div class="meta">
+          <span class="status ${a.status}">${a.status}</span>
+          ${a.progress}% · ${a.tracks} треков
+        </div>
+        <div class="bar"><div style="width:${a.progress}%"></div></div>
+        <div style="margin-top:10px">
+          <button onclick="play(${a.id})">▶ Играть</button>
+          <button onclick="tracks(${a.id}, this)">Треки</button>
+        </div>
+        <div class="tracks" id="tr-${a.id}"></div>
+      </div>`).join('');
+  } catch(e) { document.getElementById('albums').innerHTML = '<p>Ошибка: '+esc(e.message)+'</p>'; }
+}
+async function tracks(id, btn) {
+  const el = document.getElementById('tr-'+id);
+  if (el.classList.contains('open')) { el.classList.remove('open'); return; }
+  if (!el.dataset.loaded) {
+    const a = await api('/api/albums/'+id);
+    el.innerHTML = a.tracks.map(t => `<div class="track">${esc(t.name)}</div>`).join('');
+    el.dataset.loaded = '1';
+  }
+  el.classList.add('open');
+}
+async function play(id) { try { await api('/api/albums/'+id+'/play', {method:'POST'}); poll(); } catch(e){ alert('Ошибка: '+e.message); } }
+async function cmd(c) { try { await api('/api/player/'+c, {method:'POST'}); poll(); } catch(e){} }
+async function poll() {
+  try {
+    const p = await api('/api/player');
+    document.getElementById('now-title').textContent = p.song ? p.song.split('/').pop() : '—';
+    document.getElementById('now-state').textContent = p.state + (p.duration ? ` · ${fmt(p.elapsed)}/${fmt(p.duration)}` : '');
+  } catch(e) {}
+}
+function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmt(s){ s=+s||0; const m=Math.floor(s/60), ss=Math.floor(s%60); return m+':'+String(ss).padStart(2,'0'); }
+load(); poll();
+setInterval(load, 5000);
+setInterval(poll, 3000);
+</script>
+</body>
+</html>
