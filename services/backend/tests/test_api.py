@@ -93,3 +93,31 @@ def test_delete_album_removes_album(tmp_path):
 def test_delete_album_404():
     r = client.delete("/api/albums/999")
     assert r.status_code == 404
+
+
+def test_api_key_required_for_albums():
+    with patch.object(main, "API_KEY", "secret"), patch.object(main, "QB") as QB:
+        QB.return_value.info.return_value = []
+
+        r = client.get("/api/albums")
+        assert r.status_code == 401
+        assert r.json() == {"detail": "неверный API-ключ"}
+
+        r = client.get("/api/albums", headers={"X-API-Key": "secret"})
+        assert r.status_code == 200
+        assert r.json() == []
+
+
+def test_health_open_when_api_key_set():
+    with patch.object(main, "API_KEY", "secret"), patch.object(main, "mpd_cmd") as mpd_cmd:
+        mpd_cmd.return_value = {"state": "stop"}
+        r = client.get("/api/health")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
+
+def test_api_key_disabled_allows_albums_without_header():
+    with patch.object(main, "API_KEY", ""), patch.object(main, "QB") as QB:
+        QB.return_value.info.return_value = []
+        r = client.get("/api/albums")
+        assert r.status_code == 200

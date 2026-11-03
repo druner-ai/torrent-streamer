@@ -24,9 +24,23 @@ QBT_PASS = os.getenv("QBT_PASS", "adminadmin")
 MPD_HOST = os.getenv("MPD_HOST", "127.0.0.1")
 MPD_PORT = int(os.getenv("MPD_PORT", "6600"))
 DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
+API_KEY = os.getenv("API_KEY", "")
 AUDIO_EXT = {".flac", ".mp3", ".dsf", ".dff", ".wav", ".m4a", ".aiff", ".aif", ".ape", ".ogg", ".opus", ".alac"}
 
 app = FastAPI(title="torrent-streamer")
+
+# ---------- защита API ключом (опционально) ----------
+@app.middleware("http")
+async def api_key_middleware(request, call_next):
+    path = request.url.path
+    if (
+        API_KEY
+        and path.startswith("/api/")
+        and path != "/api/health"
+        and request.headers.get("X-API-Key") != API_KEY
+    ):
+        return JSONResponse({"detail": "неверный API-ключ"}, status_code=401)
+    return await call_next(request)
 
 # ---------- health ----------
 @app.get("/api/health")
