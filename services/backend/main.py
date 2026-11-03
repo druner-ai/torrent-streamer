@@ -5,6 +5,7 @@ torrent-streamer backend — связывает qbittorrent (download) + MPD (pl
 import contextlib
 import os
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -23,6 +24,8 @@ QBT_USER = os.getenv("QBT_USER", "admin")
 QBT_PASS = os.getenv("QBT_PASS", "adminadmin")
 MPD_HOST = os.getenv("MPD_HOST", "127.0.0.1")
 MPD_PORT = int(os.getenv("MPD_PORT", "6600"))
+OAAT_TARGET = os.getenv("OAAT_TARGET", "192.168.31.215:9740")
+TUNE_BRIDGE = os.getenv("TUNE_BRIDGE", "tune-bridge")
 DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 API_KEY = os.getenv("API_KEY", "")
 PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696")
@@ -31,6 +34,10 @@ AUDIO_EXT = {".flac", ".mp3", ".dsf", ".dff", ".wav", ".m4a", ".aiff", ".aif", "
 MUSICBRAINZ_UA = "torrent-streamer/0.1 (druner@gmail.com)"
 
 app = FastAPI(title="torrent-streamer")
+
+# ---------- OAAT (tune-bridge) ----------
+_OAAT_PROC = None
+_OAAT_ALBUM_ID = None
 
 # ---------- защита API ключом (опционально) ----------
 @app.middleware("http")
@@ -332,56 +339,50 @@ def delete_album(id: int, remove_torrent: bool = False):
 
 @app.post("/api/albums/{aid}/play")
 def play(aid: int):
+    global _OAAT_PROC, _OAAT_ALBUM_ID
+
     c = db()
     a = c.execute("SELECT * FROM albums WHERE id=?", (aid,)).fetchone()
     if not a:
         raise HTTPException(404, "альбом не найден")
     tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
+    if not tracks:
+        raise HTTPException(400, "в альбоме нет треков")
     qb = QB()
     info = qb.find_by_hash(a["hash"])
-    save_dir = info["save_path"] if info else None
-    if not save_dir:
+    save_path = info["save_path"] if info else None
+    if not save_path:
         raise HTTPException(500, "не найден путь загрузки")
-    # пути файлов = имя торрента + путь файла (относительно music_directory = downloads)
-    def add_all(mc):
-        mc.clear()
-        for t in tracks:
-            rel = os.path.join(info["name"], t["path"])
-            mc.add(rel)
-        mc.play()
-    mpd_cmd(add_all)
-    return {"ok": True, "tracks": len(tracks)}
+    first = tracks[0]
+    abs_path = os.path.join(save_path, first["path"])
+
+    if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
+        _OAAT_PROC.terminate()
+    try:
+        _OAAT_PROC = subprocess.Popen([
+            TUNE_BRIDGE, "controller", "--target", OAAT_TARGET, "--file", abs_path
+        ])
+    except OSError as e:
+        raise HTTPException(500, f"не удалось запустить tune-bridge: {e}") from e
+    _OAAT_ALBUM_ID = aid
+    return {"ok": True, "album_id": aid, "file": os.path.basename(abs_path)}
 
 @app.get("/api/player")
 def player():
-    def get(mc):
-        st = mc.status()
-        cur = mc.currentsong()
-        return {"state": st.get("state"), "song": cur.get("file"), "elapsed": st.get("elapsed"),
-                "duration": st.get("duration"), "volume": st.get("volume")}
-    try:
-        return mpd_cmd(get)
-    except Exception as e:  # noqa: BLE001 — catch-all на границе API
-        return {"state": "error", "error": str(e)}
+    if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
+        return {"state": "playing", "album_id": _OAAT_ALBUM_ID}
+    return {"state": "stop", "album_id": None}
 
 @app.post("/api/player/{cmd}")
 def player_cmd(cmd: str):
-    def do(mc):
-        if cmd == "play":
-            mc.play()
-        elif cmd == "pause":
-            mc.pause(1)
-        elif cmd == "next":
-            mc.next()
-        elif cmd == "prev":
-            mc.previous()
-        elif cmd == "stop":
-            mc.stop()
-        elif cmd.startswith("vol"):
-            mc.setvol(int(cmd[3:]))
-        else:
-            raise HTTPException(400, "неизвестная команда")
-    mpd_cmd(do)
+    global _OAAT_PROC, _OAAT_ALBUM_ID
+
+    if cmd != "stop":
+        raise HTTPException(400, "через OAAT поддерживается только команда 'stop'")
+    if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
+        _OAAT_PROC.terminate()
+    _OAAT_PROC = None
+    _OAAT_ALBUM_ID = None
     return {"ok": True, "cmd": cmd}
 
 # фронт (путь относительно файла — работает и в Docker, и локально)
