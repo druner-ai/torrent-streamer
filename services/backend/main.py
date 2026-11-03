@@ -377,7 +377,7 @@ def album_files(aid: int):
             "format": fmt,
         })
     c.commit()
-    return {"id": aid, "files": out}
+    return {"id": aid, "name": a["name"], "artist": a["artist"], "files": out}
 
 
 @app.get("/api/albums/{aid}/cover")

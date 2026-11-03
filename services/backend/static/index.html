@@ -7,7 +7,7 @@
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  body { margin:0; font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background:#0f1115; color:#e6e8ec; }
+  body { margin:0; font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background:#0f1115; color:#e6e8ec; padding-bottom:84px; }
   header { padding:14px 20px; border-bottom:1px solid #23262d; position:sticky; top:0; background:#0f1115; z-index:10; }
   h1 { font-size:18px; margin:0 0 10px; }
   nav { display:flex; gap:8px; margin-bottom:12px; }
@@ -15,10 +15,10 @@
   nav button.active { background:#2f6fed; color:#fff; }
   .add, .search, .key { display:flex; gap:8px; margin-top:8px; }
   .add input, .search input { flex:1; padding:10px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
-  .add button, .search button, .ctrl button, .album button { padding:10px 16px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
-  .add button:hover, .search button:hover, .ctrl button:hover, .album button:hover { background:#3f7dff; }
+  .add button, .search button, .ctrl button, .album button, .modal-card button.play { padding:10px 16px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
+  .add button:hover, .search button:hover, .ctrl button:hover, .album button:hover, .modal-card button.play:hover { background:#3f7dff; }
   .key input { width:100%; max-width:280px; padding:8px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
-  main { padding:20px; max-width:900px; margin:0 auto; }
+  main { padding:20px; max-width:1100px; margin:0 auto; }
   section[hidden] { display:none; }
   #search-results { margin-bottom:16px; }
   .result { border:1px solid #23262d; border-radius:10px; padding:12px 16px; margin-bottom:10px; background:#161a20; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
@@ -27,30 +27,42 @@
   .result button { padding:8px 14px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
   .result button:hover { background:#3f7dff; }
   .result button:disabled { background:#2c313a; color:#6b7280; cursor:not-allowed; }
-  .album { border:1px solid #23262d; border-radius:10px; padding:14px 16px; margin-bottom:10px; background:#161a20; }
-  .album .nm { font-weight:600; margin-bottom:4px; }
-  .album .artist { color:#b6bcc8; font-size:13px; margin-bottom:2px; }
-  .album .meta { color:#8b93a1; font-size:13px; }
-  .head { display:flex; gap:12px; align-items:flex-start; }
-  .cover { width:64px; height:64px; border-radius:8px; object-fit:cover; flex:none; }
-  .info { flex:1; min-width:0; }
-  .bar { height:5px; background:#23262d; border-radius:3px; margin-top:8px; overflow:hidden; }
-  .bar div { height:100%; background:#2f6fed; }
-  .tracks { margin-top:10px; display:none; border-top:1px solid #23262d; padding-top:10px; }
-  .tracks.open { display:block; }
+
+  /* Каталог-грид */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:18px; }
+  .card { cursor:pointer; border-radius:10px; overflow:hidden; }
+  .card:hover .cover { transform:scale(1.03); }
+  .cover-wrap { position:relative; aspect-ratio:1/1; border-radius:10px; overflow:hidden; background:#161a20; }
+  .card .cover { width:100%; height:100%; object-fit:cover; display:block; transition:transform .15s ease; }
+  .card .nm { font-weight:600; font-size:14px; margin-top:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .card .artist { color:#8b93a1; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .badge { position:absolute; top:8px; right:8px; font-size:11px; padding:2px 8px; border-radius:6px; background:rgba(15,17,21,.85); }
+  .badge.downloading { color:#5fd08a; }
+  .badge.complete { color:#7fb4ff; }
+
+  /* Модалка альбома */
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:20; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .modal-card { background:#161a20; border:1px solid #23262d; border-radius:14px; max-width:640px; width:100%; max-height:85vh; overflow-y:auto; padding:20px; position:relative; }
+  .modal-card .close { position:absolute; top:12px; right:14px; background:none; border:0; color:#8b93a1; font-size:20px; cursor:pointer; }
+  .m-head { display:flex; gap:16px; align-items:flex-start; }
+  .m-head .cover { width:120px; height:120px; border-radius:10px; object-fit:cover; flex:none; }
+  .m-head .info { flex:1; min-width:0; }
+  .m-head .nm { font-size:20px; font-weight:600; margin-bottom:4px; }
+  .m-head .artist { color:#b6bcc8; }
+  .m-head .meta { color:#8b93a1; font-size:13px; margin-top:4px; }
+  .m-head .acts { margin-top:12px; display:flex; gap:8px; }
+  button.del { background:#8a3d3d; }
+  button.del:hover { background:#a34a4a; }
+
+  .tracks { margin-top:14px; border-top:1px solid #23262d; padding-top:10px; }
   .track { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:6px 8px; color:#b6bcc8; font-size:14px; border-radius:6px; cursor:pointer; }
   .track:hover { background:#1c2129; }
   .track.current { background:#1e2f4a; color:#fff; }
   .track .tr { color:#8b93a1; font-size:12px; white-space:nowrap; }
   .track .tr.ok { color:#5fd08a; }
   .track.disabled { color:#5a6270; cursor:not-allowed; }
-  .album button.del { background:#8a3d3d; }
-  .album button.del:hover { background:#a34a4a; }
-  .status { font-size:12px; padding:3px 8px; border-radius:5px; background:#23262d; }
-  .status.downloading { background:#1e3a2a; color:#5fd08a; }
-  .status.complete { background:#1e2f4a; color:#7fb4ff; }
 
-  /* Плеер */
+  /* Полноэкранный плеер */
   #player-view .now { display:flex; gap:18px; align-items:center; padding:8px 0 18px; border-bottom:1px solid #23262d; }
   #player-view .cover { width:120px; height:120px; }
   #player-view .np { flex:1; min-width:0; }
@@ -65,6 +77,17 @@
   .pbar { flex:1; height:5px; background:#23262d; border-radius:3px; overflow:hidden; cursor:pointer; }
   .pbar div { height:100%; background:#2f6fed; width:0%; }
   .progress span { color:#8b93a1; font-size:12px; min-width:36px; text-align:center; }
+
+  /* Мини-плеер (bottom bar) */
+  #mini { position:fixed; left:0; right:0; bottom:0; height:68px; background:#161a20; border-top:1px solid #23262d; display:flex; align-items:center; gap:12px; padding:0 16px; z-index:15; cursor:pointer; }
+  #mini .cover { width:46px; height:46px; border-radius:7px; object-fit:cover; flex:none; }
+  #mini .m-info { flex:1; min-width:0; }
+  #mini .m-info .t { font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #mini .m-info .a { color:#8b93a1; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #mini button { background:none; border:0; color:#e6e8ec; font-size:20px; cursor:pointer; width:38px; height:38px; border-radius:8px; }
+  #mini button:hover { background:#1c2129; }
+  #mini .m-bar { position:absolute; top:-2px; left:0; right:0; height:3px; background:#23262d; }
+  #mini .m-bar div { height:100%; background:#2f6fed; width:0%; }
 </style>
 </head>
 <body>
@@ -91,7 +114,7 @@
 <main>
   <section id="catalog-view">
     <div id="search-results"></div>
-    <div id="albums"></div>
+    <div id="albums" class="grid"></div>
   </section>
   <section id="player-view" hidden>
     <div class="now">
@@ -124,8 +147,40 @@
   </section>
 </main>
 
+<div id="modal" class="modal" hidden>
+  <div class="modal-card">
+    <button class="close" onclick="closeAlbum()">✕</button>
+    <div class="m-head">
+      <img class="cover" id="al-cover" alt="">
+      <div class="info">
+        <div class="nm" id="al-name"></div>
+        <div class="artist" id="al-artist"></div>
+        <div class="meta" id="al-meta"></div>
+        <div class="acts">
+          <button class="play" onclick="play(openAlbumId)">▶ Играть</button>
+          <button class="del" onclick="del(openAlbumId)">Удалить</button>
+        </div>
+      </div>
+    </div>
+    <div class="tracks" id="al-tracks"></div>
+  </div>
+</div>
+
+<div id="mini" onclick="switchTab('player')">
+  <div class="m-bar"><div id="m-fill"></div></div>
+  <img class="cover" id="m-cover" alt="" style="display:none">
+  <div class="m-info">
+    <div class="t" id="m-title">Ничего не играет</div>
+    <div class="a" id="m-artist"></div>
+  </div>
+  <button onclick="event.stopPropagation(); cmd('prev')">⏮</button>
+  <button id="m-play" onclick="event.stopPropagation(); togglePlay()">▶</button>
+  <button onclick="event.stopPropagation(); cmd('next')">⏭</button>
+</div>
+
 <script>
 let currentAlbumId = null;
+let openAlbumId = null;
 
 async function api(path, opts={}) {
   const headers = {'Content-Type':'application/json'};
@@ -191,34 +246,27 @@ async function load() {
   try {
     const albums = await api('/api/albums');
     document.getElementById('albums').innerHTML = albums.map(a => `
-      <div class="album">
-        <div class="head">
-          <img class="cover" src="/api/albums/${a.id}/cover" alt="" onerror="this.style.display='none'">
-          <div class="info">
-            <div class="nm">${esc(a.name)}</div>
-            ${a.artist ? `<div class="artist">${esc(a.artist)}</div>` : ''}
-            <div class="meta">
-              <span class="status ${a.status}">${a.status}</span>
-              ${a.progress}% · ${a.tracks} треков
-            </div>
-            <div class="bar"><div style="width:${a.progress}%"></div></div>
-          </div>
+      <div class="card" onclick="openAlbum(${a.id})">
+        <div class="cover-wrap">
+          <img class="cover" src="/api/albums/${a.id}/cover" alt="" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%231c2027%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2275%22 y=%2278%22 fill=%22%235a6270%22 font-size=%2230%22 text-anchor=%22middle%22%3E♪%3C/text%3E%3C/svg%3E'">
+          <span class="badge ${a.status}">${a.status === 'complete' ? 'готово' : a.progress + '%'}</span>
         </div>
-        <div style="margin-top:10px">
-          <button onclick="play(${a.id})">▶ Играть</button>
-          <button onclick="tracks(${a.id}, this)">Треки</button>
-          <button class="del" onclick="del(${a.id})">Удалить</button>
-        </div>
-        <div class="tracks" id="tr-${a.id}"></div>
+        <div class="nm">${esc(a.name)}</div>
+        ${a.artist ? `<div class="artist">${esc(a.artist)}</div>` : ''}
       </div>`).join('');
   } catch(e) { document.getElementById('albums').innerHTML = '<p>Ошибка: '+esc(e.message)+'</p>'; }
 }
-async function tracks(id, btn) {
-  const el = document.getElementById('tr-'+id);
-  if (el.classList.contains('open')) { el.classList.remove('open'); return; }
-  if (!el.dataset.loaded) {
-    const a = await api('/api/albums/'+id+'/files');
-    el.innerHTML = a.files.map((f, i) => {
+async function openAlbum(id) {
+  openAlbumId = id;
+  const modal = document.getElementById('modal');
+  modal.hidden = false;
+  document.getElementById('al-cover').src = '/api/albums/' + id + '/cover';
+  try {
+    const a = await api('/api/albums/' + id + '/files');
+    document.getElementById('al-name').textContent = a.name || ('альбом #' + id);
+    document.getElementById('al-artist').textContent = a.artist || '';
+    document.getElementById('al-meta').textContent = a.files.length + ' треков';
+    document.getElementById('al-tracks').innerHTML = a.files.map((f, i) => {
       const ok = f.ready;
       const st = ok ? [f.duration ? fmt(f.duration) : '', f.format].filter(Boolean).join(' · ') : Math.round(f.progress * 100) + '%';
       return `<div class="track ${ok ? '' : 'disabled'}" onclick="${ok ? `playTrack(${id},${i})` : ''}">
@@ -226,18 +274,19 @@ async function tracks(id, btn) {
         <span class="tr ${ok ? 'ok' : ''}">${st}</span>
       </div>`;
     }).join('');
-    el.dataset.loaded = '1';
-  }
-  el.classList.add('open');
+  } catch(e) { document.getElementById('al-tracks').innerHTML = '<p>Ошибка: ' + esc(e.message) + '</p>'; }
 }
+function closeAlbum() { document.getElementById('modal').hidden = true; openAlbumId = null; }
+document.getElementById('modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeAlbum(); });
+
 async function del(id) {
   if (!confirm('Удалить альбом?')) return;
-  try { await api('/api/albums/'+id, {method:'DELETE'}); load(); }
+  try { await api('/api/albums/'+id, {method:'DELETE'}); closeAlbum(); load(); }
   catch(e) { alert('Ошибка: '+e.message); }
 }
 async function play(id) { try { await playTrack(id, 0); } catch(e){ alert('Ошибка: '+e.message); } }
 async function playTrack(aid, idx) {
-  try { await api('/api/albums/'+aid+'/tracks/'+idx+'/play', {method:'POST'}); switchTab('player'); poll(); }
+  try { await api('/api/albums/'+aid+'/tracks/'+idx+'/play', {method:'POST'}); closeAlbum(); switchTab('player'); poll(); }
   catch(e){ alert('Ошибка: '+e.message); }
 }
 async function cmd(c) { try { await api('/api/player/'+c, {method:'POST'}); poll(); } catch(e){} }
@@ -265,9 +314,27 @@ async function loadQueue(aid) {
     }).join('');
   } catch(e) { box.innerHTML = ''; }
 }
+function renderMini(p) {
+  const cover = document.getElementById('m-cover');
+  if (p.state === 'stop') {
+    document.getElementById('m-title').textContent = 'Ничего не играет';
+    document.getElementById('m-artist').textContent = '';
+    cover.style.display = 'none';
+    document.getElementById('m-fill').style.width = '0%';
+    document.getElementById('m-play').textContent = '▶';
+    return;
+  }
+  document.getElementById('m-title').textContent = p.track || ('альбом #' + p.album_id);
+  document.getElementById('m-artist').textContent = [p.artist, p.album].filter(Boolean).join(' — ');
+  if (p.album_id != null) { cover.src = '/api/albums/' + p.album_id + '/cover'; cover.style.display = ''; }
+  const e = +p.elapsed || 0, d = +p.duration || 0;
+  document.getElementById('m-fill').style.width = (d ? Math.min(100, e / d * 100) : 0) + '%';
+  document.getElementById('m-play').textContent = (p.state === 'playing') ? '⏸' : '▶';
+}
 async function poll() {
   try {
     const p = await api('/api/player');
+    renderMini(p);
     const volEl = document.getElementById('vol');
     if (volEl && p.volume != null) volEl.value = p.volume;
     const btn = document.getElementById('btn-playpause');
@@ -308,7 +375,7 @@ function updateProgress(p) {
   fill.style.width = (d ? Math.min(100, e / d * 100) : 0) + '%';
 }
 function fmt(s) { s = +s || 0; const m = Math.floor(s / 60), ss = Math.floor(s % 60); return m + ':' + String(ss).padStart(2, '0'); }
-function esc(s){ return (s||'').replace(/[&<>\"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])); }
+function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function fmtSize(bytes) {
   const n = +bytes || 0;
   if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(1) + ' ГБ';
