@@ -315,7 +315,7 @@ def test_play_streams_first_track_via_tune_bridge(tmp_path):
         Popen.assert_called_once_with([
             "tune-bridge", "controller", "--target", "192.168.31.215:9740",
             "--file", "/downloads/01.wav",
-        ])
+        ], start_new_session=True)
         assert main._OAAT_PROC is proc
         assert main._OAAT_ALBUM_ID == aid
     _reset_oaat_state()
@@ -341,7 +341,7 @@ def test_play_track_by_index(tmp_path):
         Popen.assert_called_once_with([
             "tune-bridge", "controller", "--target", "192.168.31.215:9740",
             "--file", "/downloads/02.wav",
-        ])
+        ], start_new_session=True)
     _reset_oaat_state()
 
 
@@ -408,7 +408,7 @@ def test_play_flac_converts_via_ffmpeg(tmp_path):
         Popen.assert_called_once_with([
             "tune-bridge", "controller", "--target", "192.168.31.215:9740",
             "--file", f"/tmp/oaat_stream_{aid}.wav",
-        ])
+        ], start_new_session=True)
         assert main._OAAT_WAV_PATH == f"/tmp/oaat_stream_{aid}.wav"
     _reset_oaat_state()
 

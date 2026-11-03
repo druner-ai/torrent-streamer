@@ -391,7 +391,13 @@ def _stop_oaat():
     global _OAAT_PROC, _OAAT_WAV_PATH
     if _OAAT_PROC is not None:
         if _OAAT_PROC.poll() is None:
+            # SIGTERM не сработает на процессе, остановленном SIGSTOP (пауза),
+            # поэтому после короткого ожидания добиваем SIGKILL.
             _OAAT_PROC.terminate()
+            try:
+                _OAAT_PROC.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                _OAAT_PROC.kill()
         _OAAT_PROC = None
     if _OAAT_WAV_PATH:
         with contextlib.suppress(OSError):
@@ -424,7 +430,7 @@ def _start_track(aid, idx, offset=0.0):
     try:
         _OAAT_PROC = subprocess.Popen([
             TUNE_BRIDGE, "controller", "--target", OAAT_TARGET, "--file", stream_path
-        ])
+        ], start_new_session=True)
     except OSError as e:
         raise HTTPException(500, f"не удалось запустить tune-bridge: {e}") from e
     duration, title, artist, album = _read_meta(abs_path)
