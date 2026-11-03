@@ -530,7 +530,7 @@ def _ts_cmd(payload: dict) -> dict:
 
 def _start_track(aid, idx, offset=0.0):
     global _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_TRACK_NAME, _OAAT_TRACK_TITLE
-    global _OAAT_DURATION, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL
+    global _OAAT_DURATION, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL, _OAAT_FORMAT
     tracks, save_path, meta = _current_tracks(aid)
     if not (0 <= idx < len(tracks)):
         raise HTTPException(400, "нет такого трека в альбоме")
