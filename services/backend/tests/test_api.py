@@ -267,6 +267,9 @@ def test_search_503_when_prowlarr_not_configured():
 def _reset_oaat_state():
     main._OAAT_PROC = None
     main._OAAT_ALBUM_ID = None
+    main._OAAT_TRACK_INDEX = None
+    main._OAAT_TRACK_NAME = None
+    main._OAAT_PAUSED = False
     main._OAAT_WAV_PATH = None
 
 
@@ -300,7 +303,7 @@ def test_play_streams_first_track_via_tune_bridge(tmp_path):
         r = client.post(f"/api/albums/{aid}/play")
 
         assert r.status_code == 200
-        assert r.json() == {"ok": True, "album_id": aid, "file": "01.wav"}
+        assert r.json() == {"ok": True, "album_id": aid, "track_index": 0, "file": "01.wav"}
         Popen.assert_called_once_with([
             "tune-bridge", "controller", "--target", "192.168.31.215:9740",
             "--file", "/downloads/01.wav",
@@ -375,6 +378,63 @@ def test_stop_terminates_oaat_process(tmp_path):
     _reset_oaat_state()
 
 
+def test_pause_and_resume_via_signals(tmp_path):
+    _reset_oaat_state()
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
+        main, "QB"
+    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
+        main, "TUNE_BRIDGE", "tune-bridge"
+    ), patch.object(main.subprocess, "Popen") as Popen, patch.object(
+        main.os, "kill"
+    ) as kill:
+        aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
+        qb = QB.return_value
+        qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
+        proc = Mock()
+        proc.poll.return_value = None
+        proc.pid = 12345
+        Popen.return_value = proc
+        client.post(f"/api/albums/{aid}/play")
+
+        r = client.post("/api/player/pause")
+        assert r.status_code == 200
+        kill.assert_called_with(12345, main.signal.SIGSTOP)
+        assert main._OAAT_PAUSED is True
+
+        r = client.post("/api/player/play")
+        assert r.status_code == 200
+        kill.assert_called_with(12345, main.signal.SIGCONT)
+        assert main._OAAT_PAUSED is False
+    _reset_oaat_state()
+
+
+def test_next_prev_switches_track(tmp_path):
+    _reset_oaat_state()
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
+        main, "QB"
+    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
+        main, "TUNE_BRIDGE", "tune-bridge"
+    ), patch.object(main.subprocess, "Popen") as Popen:
+        aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))  # 01.wav, 02.wav
+        qb = QB.return_value
+        qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
+        proc = Mock()
+        proc.poll.return_value = None
+        Popen.return_value = proc
+        client.post(f"/api/albums/{aid}/play")  # track 0 = 01.wav
+
+        r = client.post("/api/player/next")
+        assert r.status_code == 200
+        assert r.json()["track_index"] == 1
+        assert Popen.call_args_list[-1].args[0][-1] == "/downloads/02.wav"
+
+        r = client.post("/api/player/prev")
+        assert r.status_code == 200
+        assert r.json()["track_index"] == 0
+        assert Popen.call_args_list[-1].args[0][-1] == "/downloads/01.wav"
+    _reset_oaat_state()
+
+
 def test_player_state_reflects_process_aliveness(tmp_path):
     _reset_oaat_state()
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
@@ -392,19 +452,18 @@ def test_player_state_reflects_process_aliveness(tmp_path):
 
         r = client.get("/api/player")
         assert r.status_code == 200
-        assert r.json() == {"state": "playing", "album_id": aid}
+        assert r.json() == {"state": "playing", "album_id": aid, "track_index": 0, "track": "01.wav"}
 
         proc.poll.return_value = 0
         r = client.get("/api/player")
         assert r.status_code == 200
-        assert r.json() == {"state": "stop", "album_id": None}
+        assert r.json() == {"state": "stop", "album_id": None, "track_index": None, "track": None}
     _reset_oaat_state()
 
 
-def test_player_rejects_non_stop_commands():
+def test_player_rejects_unknown_commands():
     _reset_oaat_state()
-    for cmd in ["play", "pause", "next", "prev", "vol"]:
+    for cmd in ["vol", "seek", "foo"]:
         r = client.post(f"/api/player/{cmd}")
         assert r.status_code == 400
-        assert "только команда 'stop'" in r.json()["detail"]
     _reset_oaat_state()

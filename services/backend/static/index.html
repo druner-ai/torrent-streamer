@@ -82,10 +82,9 @@
   </div>
   <div class="ctrl">
     <button onclick="cmd('prev')">⏮</button>
-    <button onclick="cmd('play')">▶</button>
-    <button onclick="cmd('pause')">⏸</button>
+    <button id="btn-playpause" onclick="togglePlay()">▶</button>
     <button onclick="cmd('next')">⏭</button>
-    <input type="range" min="0" max="100" value="100" oninput="cmd('vol'+this.value)">
+    <button onclick="cmd('stop')">⏹</button>
   </div>
 </div>
 
@@ -191,11 +190,24 @@ async function del(id) {
 }
 async function play(id) { try { await api('/api/albums/'+id+'/play', {method:'POST'}); poll(); } catch(e){ alert('Ошибка: '+e.message); } }
 async function cmd(c) { try { await api('/api/player/'+c, {method:'POST'}); poll(); } catch(e){} }
+async function togglePlay() {
+  try {
+    const p = await api('/api/player');
+    if (p.state === 'playing') await cmd('pause');
+    else if (p.state === 'paused') await cmd('play');
+    else alert('Сначала запусти альбом (кнопка ▶ Играть)');
+  } catch(e) { alert('Ошибка: ' + e.message); }
+}
 async function poll() {
   try {
     const p = await api('/api/player');
-    document.getElementById('now-title').textContent = p.song ? p.song.split('/').pop() : '—';
-    document.getElementById('now-state').textContent = p.state + (p.duration ? ` · ${fmt(p.elapsed)}/${fmt(p.duration)}` : '');
+    const title = document.getElementById('now-title');
+    const btn = document.getElementById('btn-playpause');
+    if (p.state === 'stop') { title.textContent = '—'; }
+    else if (p.track) { title.textContent = (p.track_index !== null ? (p.track_index + 1) + '. ' : '') + p.track; }
+    else { title.textContent = 'альбом #' + p.album_id; }
+    document.getElementById('now-state').textContent = p.state;
+    if (btn) btn.textContent = (p.state === 'playing') ? '⏸' : '▶';
   } catch(e) {}
 }
 function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }

@@ -4,6 +4,7 @@ torrent-streamer backend — связывает qbittorrent (download) + MPD (pl
 """
 import contextlib
 import os
+import signal
 import sqlite3
 import subprocess
 import time
@@ -39,6 +40,9 @@ app = FastAPI(title="torrent-streamer")
 # ---------- OAAT (tune-bridge) ----------
 _OAAT_PROC = None
 _OAAT_ALBUM_ID = None
+_OAAT_TRACK_INDEX = None
+_OAAT_TRACK_NAME = None
+_OAAT_PAUSED = False
 _OAAT_WAV_PATH = None
 
 # ---------- защита API ключом (опционально) ----------
@@ -339,10 +343,7 @@ def delete_album(id: int, remove_torrent: bool = False):
     c.commit()
     return {"ok": True, "id": id}
 
-@app.post("/api/albums/{aid}/play")
-def play(aid: int):
-    global _OAAT_PROC, _OAAT_ALBUM_ID, _OAAT_WAV_PATH
-
+def _current_tracks(aid):
     c = db()
     a = c.execute("SELECT * FROM albums WHERE id=?", (aid,)).fetchone()
     if not a:
@@ -355,9 +356,29 @@ def play(aid: int):
     save_path = info["save_path"] if info else None
     if not save_path:
         raise HTTPException(500, "не найден путь загрузки")
-    first = tracks[0]
-    abs_path = os.path.join(save_path, first["path"])
+    return tracks, save_path
 
+
+def _stop_oaat():
+    global _OAAT_PROC, _OAAT_WAV_PATH
+    if _OAAT_PROC is not None:
+        if _OAAT_PROC.poll() is None:
+            _OAAT_PROC.terminate()
+        _OAAT_PROC = None
+    if _OAAT_WAV_PATH:
+        with contextlib.suppress(OSError):
+            os.remove(_OAAT_WAV_PATH)
+        _OAAT_WAV_PATH = None
+
+
+def _start_track(aid, idx):
+    global _OAAT_PROC, _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_TRACK_NAME, _OAAT_PAUSED, _OAAT_WAV_PATH
+    tracks, save_path = _current_tracks(aid)
+    if not (0 <= idx < len(tracks)):
+        raise HTTPException(400, "нет такого трека в альбоме")
+    _stop_oaat()
+    track = tracks[idx]
+    abs_path = os.path.join(save_path, track["path"])
     # tune-bridge умеет стримить только WAV → декодируем остальное (FLAC/DSD/mp3)
     # через ffmpeg в lossless PCM (bit-perfect, качество сохраняется)
     if Path(abs_path).suffix.lower() != ".wav":
@@ -370,9 +391,6 @@ def play(aid: int):
             raise HTTPException(500, f"ffmpeg не смог декодировать: {conv.stderr.decode(errors='replace')[-200:]}")
     else:
         stream_path = abs_path
-
-    if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
-        _OAAT_PROC.terminate()
     try:
         _OAAT_PROC = subprocess.Popen([
             TUNE_BRIDGE, "controller", "--target", OAAT_TARGET, "--file", stream_path
@@ -380,30 +398,61 @@ def play(aid: int):
     except OSError as e:
         raise HTTPException(500, f"не удалось запустить tune-bridge: {e}") from e
     _OAAT_ALBUM_ID = aid
+    _OAAT_TRACK_INDEX = idx
+    _OAAT_TRACK_NAME = track["name"]
+    _OAAT_PAUSED = False
     _OAAT_WAV_PATH = stream_path if stream_path != abs_path else None
-    return {"ok": True, "album_id": aid, "file": os.path.basename(abs_path)}
+    return {"ok": True, "album_id": aid, "track_index": idx, "file": os.path.basename(abs_path)}
+
+
+@app.post("/api/albums/{aid}/play")
+def play(aid: int):
+    return _start_track(aid, 0)
+
 
 @app.get("/api/player")
 def player():
     if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
-        return {"state": "playing", "album_id": _OAAT_ALBUM_ID}
-    return {"state": "stop", "album_id": None}
+        state = "paused" if _OAAT_PAUSED else "playing"
+        return {"state": state, "album_id": _OAAT_ALBUM_ID, "track_index": _OAAT_TRACK_INDEX,
+                "track": _OAAT_TRACK_NAME}
+    return {"state": "stop", "album_id": None, "track_index": None, "track": None}
+
 
 @app.post("/api/player/{cmd}")
 def player_cmd(cmd: str):
-    global _OAAT_PROC, _OAAT_ALBUM_ID, _OAAT_WAV_PATH
+    global _OAAT_PAUSED, _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX
 
-    if cmd != "stop":
-        raise HTTPException(400, "через OAAT поддерживается только команда 'stop'")
-    if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
-        _OAAT_PROC.terminate()
-    if _OAAT_WAV_PATH:
-        with contextlib.suppress(OSError):
-            os.remove(_OAAT_WAV_PATH)
-    _OAAT_PROC = None
-    _OAAT_ALBUM_ID = None
-    _OAAT_WAV_PATH = None
-    return {"ok": True, "cmd": cmd}
+    if cmd == "stop":
+        _stop_oaat()
+        _OAAT_ALBUM_ID = None
+        _OAAT_TRACK_INDEX = None
+        _OAAT_TRACK_NAME = None
+        _OAAT_PAUSED = False
+        return {"ok": True, "cmd": cmd}
+
+    if cmd == "pause":
+        if _OAAT_PROC is None or _OAAT_PROC.poll() is not None:
+            raise HTTPException(400, "нечего ставить на паузу")
+        os.kill(_OAAT_PROC.pid, signal.SIGSTOP)
+        _OAAT_PAUSED = True
+        return {"ok": True, "cmd": cmd}
+
+    if cmd == "play":  # resume после паузы
+        if _OAAT_PROC is None or _OAAT_PROC.poll() is not None:
+            raise HTTPException(400, "нечего продолжать")
+        os.kill(_OAAT_PROC.pid, signal.SIGCONT)
+        _OAAT_PAUSED = False
+        return {"ok": True, "cmd": cmd}
+
+    if cmd in ("next", "prev"):
+        if _OAAT_ALBUM_ID is None:
+            raise HTTPException(400, "сначала запусти альбом")
+        idx = _OAAT_TRACK_INDEX if _OAAT_TRACK_INDEX is not None else 0
+        nxt = idx + 1 if cmd == "next" else idx - 1
+        return _start_track(_OAAT_ALBUM_ID, nxt)
+
+    raise HTTPException(400, f"неизвестная команда: {cmd}")
 
 # фронт (путь относительно файла — работает и в Docker, и локально)
 STATIC_DIR = Path(__file__).parent / "static"
