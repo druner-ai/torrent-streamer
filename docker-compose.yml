@@ -37,5 +37,9 @@ services:
       - MPD_HOST=127.0.0.1
       - MPD_PORT=6600
       - DB_PATH=/data/catalog.db
+      - OAAT_TARGET=${OAAT_TARGET:-192.168.31.215:9740}
+      - TUNE_BRIDGE=/usr/local/bin/tune-bridge
     volumes:
       - ./data:/data
+      - /home/nuc/oaat/target/debug/tune-bridge:/usr/local/bin/tune-bridge:ro
+      - /home/nuc/torrent-streamer/data/qbt/qBittorrent/downloads:/home/nuc/torrent-streamer/data/qbt/qBittorrent/downloads:ro
