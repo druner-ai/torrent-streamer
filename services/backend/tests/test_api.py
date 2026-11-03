@@ -265,17 +265,11 @@ def test_search_503_when_prowlarr_not_configured():
 
 
 def _reset_oaat_state():
-    main._OAAT_PROC = None
     main._OAAT_ALBUM_ID = None
     main._OAAT_TRACK_INDEX = None
     main._OAAT_TRACK_NAME = None
     main._OAAT_TRACK_TITLE = None
-    main._OAAT_PAUSED = False
-    main._OAAT_WAV_PATH = None
     main._OAAT_DURATION = None
-    main._OAAT_STARTED_AT = None
-    main._OAAT_PAUSED_AT = None
-    main._OAAT_OFFSET = 0.0
     main._OAAT_ALBUM_NAME = None
     main._OAAT_ARTIST = None
     main._OAAT_COVER_URL = None
@@ -295,28 +289,22 @@ def _seed_album_with_tracks(main, db_path):
     return aid
 
 
-def test_play_streams_first_track_via_tune_bridge(tmp_path):
+def test_play_streams_first_track(tmp_path):
     _reset_oaat_state()
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
         main, "QB"
-    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
-        main, "TUNE_BRIDGE", "tune-bridge"
-    ), patch.object(main.subprocess, "Popen") as Popen:
+    ) as QB, patch.object(main, "_ts_cmd") as ts:
         aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
         qb = QB.return_value
         qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
-        proc = Mock()
-        Popen.return_value = proc
+        ts.return_value = {"ok": True, "state": "playing", "duration": 100.0}
 
         r = client.post(f"/api/albums/{aid}/play")
 
         assert r.status_code == 200
         assert r.json() == {"ok": True, "album_id": aid, "track_index": 0, "file": "01.wav"}
-        Popen.assert_called_once_with([
-            "tune-bridge", "controller", "--target", "192.168.31.215:9740",
-            "--file", "/downloads/01.wav",
-        ], start_new_session=True)
-        assert main._OAAT_PROC is proc
+        ts.assert_called_once_with({"cmd": "play", "path": "/downloads/01.wav",
+                                    "title": "01.wav", "artist": None, "album": "Album"})
         assert main._OAAT_ALBUM_ID == aid
     _reset_oaat_state()
 
@@ -325,51 +313,17 @@ def test_play_track_by_index(tmp_path):
     _reset_oaat_state()
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
         main, "QB"
-    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
-        main, "TUNE_BRIDGE", "tune-bridge"
-    ), patch.object(main.subprocess, "Popen") as Popen:
+    ) as QB, patch.object(main, "_ts_cmd") as ts:
         aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
         qb = QB.return_value
         qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
-        proc = Mock()
-        Popen.return_value = proc
+        ts.return_value = {"ok": True, "state": "playing", "duration": 100.0}
 
         r = client.post(f"/api/albums/{aid}/tracks/1/play")
 
         assert r.status_code == 200
         assert r.json()["track_index"] == 1
-        Popen.assert_called_once_with([
-            "tune-bridge", "controller", "--target", "192.168.31.215:9740",
-            "--file", "/downloads/02.wav",
-        ], start_new_session=True)
-    _reset_oaat_state()
-
-
-def test_seek_restarts_with_offset(tmp_path):
-    _reset_oaat_state()
-    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
-        main, "QB"
-    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
-        main, "TUNE_BRIDGE", "tune-bridge"
-    ), patch.object(main, "FFMPEG", "ffmpeg"), patch.object(
-        main.subprocess, "run"
-    ) as run, patch.object(main.subprocess, "Popen") as Popen:
-        aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
-        qb = QB.return_value
-        qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
-        run.return_value.returncode = 0
-        proc = Mock()
-        proc.poll.return_value = None
-        Popen.return_value = proc
-        client.post(f"/api/albums/{aid}/play")
-
-        r = client.post("/api/player/seek?position=60")
-
-        assert r.status_code == 200
-        run.assert_called_once_with(
-            ["ffmpeg", "-y", "-ss", "60.0", "-i", "/downloads/01.wav",
-             "-f", "wav", f"/tmp/oaat_stream_{aid}.wav"], check=False, capture_output=True)
-        assert main._OAAT_OFFSET == 60.0
+        assert ts.call_args.args[0]["path"] == "/downloads/02.wav"
     _reset_oaat_state()
 
 
@@ -377,12 +331,9 @@ def test_play_flac_converts_via_ffmpeg(tmp_path):
     _reset_oaat_state()
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
         main, "QB"
-    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
-        main, "TUNE_BRIDGE", "tune-bridge"
-    ), patch.object(main, "FFMPEG", "ffmpeg"), patch.object(
+    ) as QB, patch.object(main, "FFMPEG", "ffmpeg"), patch.object(
         main.subprocess, "run"
-    ) as run, patch.object(main.subprocess, "Popen") as Popen:
-        # seed FLAC-трек (не-WAV → нужна конвертация)
+    ) as run, patch.object(main, "_ts_cmd") as ts:
         c = main.db()
         cur = c.execute("INSERT INTO albums(hash,name,status,added_at) VALUES(?,?,?,?)",
                         ("hash1", "Album", "downloading", 0))
@@ -395,8 +346,7 @@ def test_play_flac_converts_via_ffmpeg(tmp_path):
         qb = QB.return_value
         qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
         run.return_value.returncode = 0
-        proc = Mock()
-        Popen.return_value = proc
+        ts.return_value = {"ok": True, "state": "playing", "duration": 100.0}
 
         r = client.post(f"/api/albums/{aid}/play")
 
@@ -405,66 +355,65 @@ def test_play_flac_converts_via_ffmpeg(tmp_path):
         run.assert_called_once_with(
             ["ffmpeg", "-y", "-i", "/downloads/01.flac", "-f", "wav",
              f"/tmp/oaat_stream_{aid}.wav"], check=False, capture_output=True)
-        Popen.assert_called_once_with([
-            "tune-bridge", "controller", "--target", "192.168.31.215:9740",
-            "--file", f"/tmp/oaat_stream_{aid}.wav",
-        ], start_new_session=True)
-        assert main._OAAT_WAV_PATH == f"/tmp/oaat_stream_{aid}.wav"
+        assert ts.call_args.args[0]["path"] == f"/tmp/oaat_stream_{aid}.wav"
     _reset_oaat_state()
 
 
-def test_stop_terminates_oaat_process(tmp_path):
+def test_stop_resets_state(tmp_path):
     _reset_oaat_state()
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
         main, "QB"
-    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
-        main, "TUNE_BRIDGE", "tune-bridge"
-    ), patch.object(main.subprocess, "Popen") as Popen:
+    ) as QB, patch.object(main, "_ts_cmd") as ts:
         aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
         qb = QB.return_value
         qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
-        proc = Mock()
-        proc.poll.return_value = None
-        Popen.return_value = proc
+        ts.return_value = {"ok": True, "state": "playing", "duration": 100.0}
         client.post(f"/api/albums/{aid}/play")
 
         r = client.post("/api/player/stop")
 
         assert r.status_code == 200
         assert r.json() == {"ok": True, "cmd": "stop"}
-        proc.terminate.assert_called_once()
-        assert main._OAAT_PROC is None
+        assert ts.call_args.args[0] == {"cmd": "stop"}
         assert main._OAAT_ALBUM_ID is None
     _reset_oaat_state()
 
 
-def test_pause_and_resume_via_signals(tmp_path):
+def test_pause_resume_seek_volume(tmp_path):
     _reset_oaat_state()
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
         main, "QB"
-    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
-        main, "TUNE_BRIDGE", "tune-bridge"
-    ), patch.object(main.subprocess, "Popen") as Popen, patch.object(
-        main.os, "kill"
-    ) as kill:
+    ) as QB, patch.object(main, "_ts_cmd") as ts:
         aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
         qb = QB.return_value
         qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
-        proc = Mock()
-        proc.poll.return_value = None
-        proc.pid = 12345
-        Popen.return_value = proc
+        ts.return_value = {"ok": True, "state": "playing", "duration": 100.0}
         client.post(f"/api/albums/{aid}/play")
 
         r = client.post("/api/player/pause")
         assert r.status_code == 200
-        kill.assert_called_with(12345, main.signal.SIGSTOP)
-        assert main._OAAT_PAUSED is True
+        assert ts.call_args.args[0] == {"cmd": "pause"}
 
         r = client.post("/api/player/play")
         assert r.status_code == 200
-        kill.assert_called_with(12345, main.signal.SIGCONT)
-        assert main._OAAT_PAUSED is False
+        assert ts.call_args.args[0] == {"cmd": "resume"}
+
+        r = client.post("/api/player/seek?position=60")
+        assert r.status_code == 200
+        assert ts.call_args.args[0] == {"cmd": "seek", "sec": 60.0}
+
+        r = client.post("/api/player/volume?level=75")
+        assert r.status_code == 200
+        assert ts.call_args.args[0] == {"cmd": "volume", "level": 75}
+    _reset_oaat_state()
+
+
+def test_pause_without_track_400(tmp_path):
+    _reset_oaat_state()
+    with patch.object(main, "_ts_cmd") as ts:
+        ts.return_value = {"ok": False, "error": "нет трека"}
+        r = client.post("/api/player/pause")
+        assert r.status_code == 400
     _reset_oaat_state()
 
 
@@ -472,42 +421,37 @@ def test_next_prev_switches_track(tmp_path):
     _reset_oaat_state()
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
         main, "QB"
-    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
-        main, "TUNE_BRIDGE", "tune-bridge"
-    ), patch.object(main.subprocess, "Popen") as Popen:
+    ) as QB, patch.object(main, "_ts_cmd") as ts:
         aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))  # 01.wav, 02.wav
         qb = QB.return_value
         qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
-        proc = Mock()
-        proc.poll.return_value = None
-        Popen.return_value = proc
+        ts.return_value = {"ok": True, "state": "playing", "duration": 100.0}
         client.post(f"/api/albums/{aid}/play")  # track 0 = 01.wav
 
         r = client.post("/api/player/next")
         assert r.status_code == 200
         assert r.json()["track_index"] == 1
-        assert Popen.call_args_list[-1].args[0][-1] == "/downloads/02.wav"
+        assert ts.call_args.args[0]["path"] == "/downloads/02.wav"
 
         r = client.post("/api/player/prev")
         assert r.status_code == 200
         assert r.json()["track_index"] == 0
-        assert Popen.call_args_list[-1].args[0][-1] == "/downloads/01.wav"
+        assert ts.call_args.args[0]["path"] == "/downloads/01.wav"
     _reset_oaat_state()
 
 
-def test_player_state_reflects_process_aliveness(tmp_path):
+def test_player_state_from_status(tmp_path):
     _reset_oaat_state()
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
         main, "QB"
-    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
-        main, "TUNE_BRIDGE", "tune-bridge"
-    ), patch.object(main.subprocess, "Popen") as Popen:
+    ) as QB, patch.object(main, "_ts_cmd") as ts:
         aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
         qb = QB.return_value
         qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
-        proc = Mock()
-        proc.poll.return_value = None
-        Popen.return_value = proc
+        ts.side_effect = [
+            {"ok": True, "state": "playing", "duration": 100.0},  # play
+            {"state": "playing", "elapsed": 3.5, "duration": 100.0},  # status
+        ]
         client.post(f"/api/albums/{aid}/play")
 
         r = client.get("/api/player")
@@ -516,11 +460,11 @@ def test_player_state_reflects_process_aliveness(tmp_path):
         assert body["state"] == "playing"
         assert body["album_id"] == aid
         assert body["track_index"] == 0
-        assert body["track"] == "01.wav"
+        assert body["elapsed"] == 3.5
+        assert body["duration"] == 100.0
 
-        proc.poll.return_value = 0
+        ts.side_effect = [{"state": "stop"}]
         r = client.get("/api/player")
-        assert r.status_code == 200
         body = r.json()
         assert body["state"] == "stop"
         assert body["album_id"] is None
