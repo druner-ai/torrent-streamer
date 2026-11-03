@@ -50,13 +50,16 @@ def test_album_files_ready_progress(tmp_path):
             {"name": "01.flac", "index": 0, "size": 100, "progress": 1.0, "priority": 6},
             {"name": "02.flac", "index": 1, "size": 200, "progress": 0.5, "priority": 6},
         ]
+        qb.find_by_hash.return_value = {"save_path": "/downloads"}
         r = client.get(f"/api/albums/{aid}/files")
         assert r.status_code == 200
         body = r.json()
         assert body["id"] == aid
         assert body["files"] == [
-            {"name": "01.flac", "path": "01.flac", "size": 100, "ready": True, "progress": 1.0},
-            {"name": "02.flac", "path": "02.flac", "size": 200, "ready": False, "progress": 0.5},
+            {"name": "01.flac", "title": "01", "path": "01.flac", "size": 100,
+             "ready": True, "progress": 1.0, "duration": None},
+            {"name": "02.flac", "title": "02", "path": "02.flac", "size": 200,
+             "ready": False, "progress": 0.5, "duration": None},
         ]
 
 

@@ -5,6 +5,7 @@ torrent-streamer backend — связывает qbittorrent (download) + MPD (pl
 import contextlib
 import json
 import os
+import re
 import socket
 import sqlite3
 import subprocess
@@ -99,6 +100,14 @@ def db():
     c.execute("""CREATE TABLE IF NOT EXISTS tracks(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         album_id INTEGER, path TEXT, name TEXT, size INTEGER)""")
+    try:
+        c.execute("ALTER TABLE tracks ADD COLUMN duration REAL")
+    except sqlite3.OperationalError:
+        pass  # колонка уже есть
+    try:
+        c.execute("ALTER TABLE tracks ADD COLUMN title TEXT")
+    except sqlite3.OperationalError:
+        pass  # колонка уже есть
     c.commit()
     return c
 
@@ -308,6 +317,13 @@ def album(aid: int):
             "artist": a["artist"], "cover_url": a["cover_url"],
             "tracks": [dict(t) for t in tracks]}
 
+def _clean_track_name(name):
+    """«01. Look Up.flac» → «Look Up»; «01 - Look Up.flac» → «Look Up»."""
+    stem = Path(name).stem
+    cleaned = re.sub(r"^\s*\d+\s*[.\-_)]\s*", "", stem)
+    return cleaned.strip() or stem
+
+
 @app.get("/api/albums/{aid}/files")
 def album_files(aid: int):
     c = db()
@@ -315,22 +331,40 @@ def album_files(aid: int):
     if not a:
         raise HTTPException(404, "альбом не найден")
     tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
+    save_path = None
     try:
         qb = QB()
         files = {f["name"]: f for f in qb.files(a["hash"])}
+        info = qb.find_by_hash(a["hash"])
+        save_path = info.get("save_path") if info else None
     except Exception:  # noqa: BLE001 — торрент не найден / qbt недоступен
         files = {}
     out = []
     for t in tracks:
         f = files.get(t["path"])
         progress = f["progress"] if f else 0.0
+        ready = bool(progress >= 1.0)
+        title = t["title"]
+        duration = t["duration"]
+        # лениво читаем duration/title из скачанного файла и кэшируем в БД
+        if ready and save_path and (title is None or duration is None):
+            abs_path = os.path.join(save_path, t["path"])
+            dur, tl, _, _ = _read_meta(abs_path)
+            if dur is not None:
+                duration = dur
+            if tl:
+                title = tl
+            c.execute("UPDATE tracks SET duration=?, title=? WHERE id=?", (duration, title, t["id"]))
         out.append({
             "name": t["name"],
+            "title": title or _clean_track_name(t["name"]),
             "path": t["path"],
             "size": t["size"],
-            "ready": bool(progress >= 1.0),
+            "ready": ready,
             "progress": float(progress),
+            "duration": duration,
         })
+    c.commit()
     return {"id": aid, "files": out}
 
 @app.delete("/api/albums/{id}")

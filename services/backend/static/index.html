@@ -216,10 +216,10 @@ async function tracks(id, btn) {
     const a = await api('/api/albums/'+id+'/files');
     el.innerHTML = a.files.map((f, i) => {
       const ok = f.ready;
-      const st = ok ? 'готов' : Math.round(f.progress * 100) + '%';
+      const st = ok ? (f.duration ? fmt(f.duration) : '') : Math.round(f.progress * 100) + '%';
       return `<div class="track ${ok ? '' : 'disabled'}" onclick="${ok ? `playTrack(${id},${i})` : ''}">
-        <span>${i+1}. ${esc(f.name)}</span>
-        <span class="tr ${ok ? 'ok' : ''}">${ok ? '▶ ' + st : st}</span>
+        <span>${i+1}. ${esc(f.title || f.name)}</span>
+        <span class="tr ${ok ? 'ok' : ''}">${st}</span>
       </div>`;
     }).join('');
     el.dataset.loaded = '1';
@@ -253,9 +253,9 @@ async function loadQueue(aid) {
     box.innerHTML = a.files.map((f, i) => {
       const ok = f.ready;
       const cur = (p.album_id === aid && p.track_index === i);
-      const st = ok ? 'готов' : Math.round(f.progress * 100) + '%';
+      const st = ok ? (f.duration ? fmt(f.duration) : '') : Math.round(f.progress * 100) + '%';
       return `<div class="track ${ok ? '' : 'disabled'} ${cur ? 'current' : ''}" onclick="${ok ? `playTrack(${aid},${i})` : ''}">
-        <span>${i+1}. ${esc(f.name)}</span>
+        <span>${i+1}. ${esc(f.title || f.name)}</span>
         <span class="tr ${ok ? 'ok' : ''}">${st}</span>
       </div>`;
     }).join('');
