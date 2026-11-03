@@ -113,6 +113,10 @@
       <button onclick="cmd('next')">⏭</button>
       <button onclick="cmd('stop')">⏹</button>
     </div>
+    <div class="vol" style="display:flex; align-items:center; justify-content:center; gap:10px; padding:6px 0 12px;">
+      <span style="color:#8b93a1; font-size:14px;">🔊</span>
+      <input type="range" id="vol" min="0" max="100" value="100" style="width:220px; accent-color:#2f6fed;">
+    </div>
     <div class="queue">
       <h3 id="queue-title">Очередь</h3>
       <div id="queue"></div>
@@ -189,7 +193,7 @@ async function load() {
     document.getElementById('albums').innerHTML = albums.map(a => `
       <div class="album">
         <div class="head">
-          ${a.cover_url ? `<img class="cover" src="${esc(a.cover_url)}" alt="">` : ''}
+          <img class="cover" src="/api/albums/${a.id}/cover" alt="" onerror="this.style.display='none'">
           <div class="info">
             <div class="nm">${esc(a.name)}</div>
             ${a.artist ? `<div class="artist">${esc(a.artist)}</div>` : ''}
@@ -264,6 +268,8 @@ async function loadQueue(aid) {
 async function poll() {
   try {
     const p = await api('/api/player');
+    const volEl = document.getElementById('vol');
+    if (volEl && p.volume != null) volEl.value = p.volume;
     const btn = document.getElementById('btn-playpause');
     if (p.state === 'stop') {
       document.getElementById('now-title').textContent = 'Ничего не играет';
@@ -277,7 +283,7 @@ async function poll() {
       document.getElementById('now-album').textContent = [p.artist, p.album].filter(Boolean).join(' — ');
       document.getElementById('now-state').textContent = p.state;
       const cover = document.getElementById('p-cover');
-      if (p.cover_url) { cover.src = p.cover_url; cover.style.display = ''; }
+      if (p.album_id != null) { cover.src = '/api/albums/' + p.album_id + '/cover'; cover.style.display = ''; }
       else cover.style.display = 'none';
       updateProgress(p);
       if (btn) btn.textContent = (p.state === 'playing') ? '⏸' : '▶';
@@ -321,6 +327,9 @@ document.getElementById('p-bar').addEventListener('click', async (e) => {
     await api('/api/player/seek?position=' + pos, {method:'POST'});
     poll();
   } catch(err) {}
+});
+document.getElementById('vol').addEventListener('input', async (e) => {
+  try { await api('/api/player/volume?level=' + e.target.value, {method:'POST'}); } catch(err) {}
 });
 </script>
 </body>

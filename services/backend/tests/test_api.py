@@ -276,6 +276,7 @@ def _reset_oaat_state():
     main._OAAT_ALBUM_NAME = None
     main._OAAT_ARTIST = None
     main._OAAT_COVER_URL = None
+    main._OAAT_VOLUME = 100
 
 
 def _seed_album_with_tracks(main, db_path):
@@ -480,4 +481,53 @@ def test_player_rejects_unknown_commands():
     for cmd in ["vol", "foo"]:
         r = client.post(f"/api/player/{cmd}")
         assert r.status_code == 400
+    _reset_oaat_state()
+
+
+def test_album_cover_embedded(tmp_path):
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+    (dl / "01.wav").write_bytes(b"dummy")
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
+        main, "QB"
+    ) as QB, patch.object(main, "COVER_CACHE_DIR", str(tmp_path / "covers")), patch.object(
+        main, "_read_cover", return_value=(b"\xff\xd8\xff\xe0coverdata", "image/jpeg")
+    ):
+        aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
+        qb = QB.return_value
+        qb.find_by_hash.return_value = {"save_path": str(dl), "name": "Album"}
+
+        r = client.get(f"/api/albums/{aid}/cover")
+
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/jpeg"
+        assert r.content == b"\xff\xd8\xff\xe0coverdata"
+
+
+def test_album_cover_404_when_no_cover(tmp_path):
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+    (dl / "01.wav").write_bytes(b"dummy")
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
+        main, "QB"
+    ) as QB, patch.object(main, "COVER_CACHE_DIR", str(tmp_path / "covers")), patch.object(
+        main, "_read_cover", return_value=None
+    ):
+        aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
+        qb = QB.return_value
+        qb.find_by_hash.return_value = {"save_path": str(dl), "name": "Album"}
+
+        r = client.get(f"/api/albums/{aid}/cover")
+
+        assert r.status_code == 404
+
+
+def test_player_volume_persists():
+    _reset_oaat_state()
+    with patch.object(main, "_ts_cmd") as ts:
+        ts.return_value = {"ok": True, "volume": 30}
+        r = client.post("/api/player/volume?level=30")
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "volume": 30}
+        assert main._OAAT_VOLUME == 30
     _reset_oaat_state()

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import requests
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from mpd import MPDClient
 from mutagen import File as MutagenFile
@@ -35,6 +35,7 @@ DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 API_KEY = os.getenv("API_KEY", "")
 PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696")
 PROWLARR_API_KEY = os.getenv("PROWLARR_API_KEY", "")
+COVER_CACHE_DIR = os.getenv("COVER_CACHE_DIR", "/data/covers")
 AUDIO_EXT = {".flac", ".mp3", ".dsf", ".dff", ".wav", ".m4a", ".aiff", ".aif", ".ape", ".ogg", ".opus", ".alac"}
 MUSICBRAINZ_UA = "torrent-streamer/0.1 (druner@gmail.com)"
 
@@ -49,6 +50,7 @@ _OAAT_DURATION = None
 _OAAT_ALBUM_NAME = None
 _OAAT_ARTIST = None
 _OAAT_COVER_URL = None
+_OAAT_VOLUME = 100
 
 # ---------- защита API ключом (опционально) ----------
 @app.middleware("http")
@@ -367,6 +369,53 @@ def album_files(aid: int):
     c.commit()
     return {"id": aid, "files": out}
 
+
+@app.get("/api/albums/{aid}/cover")
+def album_cover(aid: int):
+    c = db()
+    a = c.execute("SELECT * FROM albums WHERE id=?", (aid,)).fetchone()
+    if not a:
+        raise HTTPException(404, "альбом не найден")
+    cache_dir = Path(COVER_CACHE_DIR)
+    cache_dir.mkdir(exist_ok=True)
+    cache_file = cache_dir / f"{aid}.jpg"
+    if cache_file.exists():
+        return Response(content=cache_file.read_bytes(), media_type="image/jpeg")
+    data = mime = None
+    try:
+        qb = QB()
+        info = qb.find_by_hash(a["hash"])
+        save_path = info.get("save_path") if info else None
+        tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
+        # 1) embedded обложка из первого читаемого трека
+        for t in tracks:
+            if save_path:
+                abs_path = os.path.join(save_path, t["path"])
+                if os.path.exists(abs_path):
+                    got = _read_cover(abs_path)
+                    if got:
+                        data, mime = got
+                        break
+        # 2) cover.jpg/folder.jpg рядом с треками
+        if not data and save_path and tracks:
+            dirs = {os.path.dirname(os.path.join(save_path, tracks[0]["path"])), save_path}
+            for d in dirs:
+                for name in ("cover.jpg", "folder.jpg", "front.jpg", "cover.png", "folder.png"):
+                    p = os.path.join(d, name)
+                    if os.path.exists(p):
+                        data = Path(p).read_bytes()
+                        mime = "image/png" if name.endswith(".png") else "image/jpeg"
+                        break
+                if data:
+                    break
+    except Exception:  # noqa: BLE001, S110 — обложка не критична
+        pass
+    if not data:
+        raise HTTPException(404, "обложка не найдена")
+    cache_file.write_bytes(data)
+    return Response(content=data, media_type=mime or "image/jpeg")
+
+
 @app.delete("/api/albums/{id}")
 def delete_album(id: int, remove_torrent: bool = False):
     c = db()
@@ -414,6 +463,28 @@ def _read_meta(path):
         return duration, title, artist, album
     except Exception:  # noqa: BLE001 — метаданные не критичны
         return None, None, None, None
+
+
+def _read_cover(path):
+    """embedded обложка из тегов → (bytes, mime) или None."""
+    try:
+        f = MutagenFile(path)
+        if f is None:
+            return None
+        pics = getattr(f, "pictures", None)
+        if pics and pics[0].data:
+            mime = getattr(pics[0], "mime", None) or "image/jpeg"
+            return pics[0].data, mime
+        tags = getattr(f, "tags", None)
+        if tags:
+            for key in ("APIC:", "covr"):
+                if key in tags:
+                    frame = tags[key]
+                    if isinstance(frame, list) and frame and getattr(frame[0], "data", None):
+                        return frame[0].data, getattr(frame[0], "mime", None) or "image/jpeg"
+    except Exception:  # noqa: BLE001 — обложка не критична
+        return None
+    return None
 
 
 def _ts_cmd(payload: dict) -> dict:
@@ -504,8 +575,10 @@ def player_seek(position: float):
 
 @app.post("/api/player/volume")
 def player_volume(level: int):
+    global _OAAT_VOLUME
     level = max(0, min(100, level))
     _ts_cmd({"cmd": "volume", "level": level})
+    _OAAT_VOLUME = level
     return {"ok": True, "volume": level}
 
 
@@ -515,11 +588,13 @@ def player():
     state = resp.get("state", "stop")
     if state == "stop":
         return {"state": "stop", "album_id": None, "track_index": None, "track": None,
-                "elapsed": None, "duration": None, "album": None, "artist": None, "cover_url": None}
+                "elapsed": None, "duration": None, "album": None, "artist": None,
+                "cover_url": None, "volume": _OAAT_VOLUME}
     return {"state": state, "album_id": _OAAT_ALBUM_ID, "track_index": _OAAT_TRACK_INDEX,
             "track": _OAAT_TRACK_TITLE, "elapsed": resp.get("elapsed"),
             "duration": resp.get("duration") or _OAAT_DURATION,
-            "album": _OAAT_ALBUM_NAME, "artist": _OAAT_ARTIST, "cover_url": _OAAT_COVER_URL}
+            "album": _OAAT_ALBUM_NAME, "artist": _OAAT_ARTIST, "cover_url": _OAAT_COVER_URL,
+            "volume": _OAAT_VOLUME}
 
 
 @app.post("/api/player/{cmd}")
