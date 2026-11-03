@@ -51,6 +51,7 @@ _OAAT_ALBUM_NAME = None
 _OAAT_ARTIST = None
 _OAAT_COVER_URL = None
 _OAAT_VOLUME = 100
+_OAAT_FORMAT = None
 
 # ---------- защита API ключом (опционально) ----------
 @app.middleware("http")
@@ -108,6 +109,10 @@ def db():
         pass  # колонка уже есть
     try:
         c.execute("ALTER TABLE tracks ADD COLUMN title TEXT")
+    except sqlite3.OperationalError:
+        pass  # колонка уже есть
+    try:
+        c.execute("ALTER TABLE tracks ADD COLUMN format TEXT")
     except sqlite3.OperationalError:
         pass  # колонка уже есть
     c.commit()
@@ -348,15 +353,19 @@ def album_files(aid: int):
         ready = bool(progress >= 1.0)
         title = t["title"]
         duration = t["duration"]
-        # лениво читаем duration/title из скачанного файла и кэшируем в БД
-        if ready and save_path and (title is None or duration is None):
+        fmt = t["format"]
+        # лениво читаем duration/title/format из скачанного файла и кэшируем
+        if ready and save_path and (title is None or duration is None or fmt is None):
             abs_path = os.path.join(save_path, t["path"])
-            dur, tl, _, _ = _read_meta(abs_path)
+            dur, tl, _, _, fmeta = _read_meta(abs_path)
             if dur is not None:
                 duration = dur
             if tl:
                 title = tl
-            c.execute("UPDATE tracks SET duration=?, title=? WHERE id=?", (duration, title, t["id"]))
+            if fmeta:
+                fmt = fmeta
+            c.execute("UPDATE tracks SET duration=?, title=?, format=? WHERE id=?",
+                      (duration, title, fmt, t["id"]))
         out.append({
             "name": t["name"],
             "title": title or _clean_track_name(t["name"]),
@@ -365,6 +374,7 @@ def album_files(aid: int):
             "ready": ready,
             "progress": float(progress),
             "duration": duration,
+            "format": fmt,
         })
     c.commit()
     return {"id": aid, "files": out}
@@ -448,11 +458,11 @@ def _current_tracks(aid):
 
 
 def _read_meta(path):
-    """duration + title/artist/album из тегов (fallback — None)."""
+    """duration, title/artist/album, format-строка из тегов (fallback — None)."""
     try:
         f = MutagenFile(path)
         if f is None:
-            return None, None, None, None
+            return None, None, None, None, None
         duration = float(f.info.length) if f.info is not None else None
         title = artist = album = None
         tags = getattr(f, "tags", None)
@@ -460,9 +470,20 @@ def _read_meta(path):
             title = (tags.get("title") or [None])[0]
             artist = (tags.get("artist") or [None])[0]
             album = (tags.get("album") or [None])[0]
-        return duration, title, artist, album
+        # формат: для lossless — битность/частота («24/96»), иначе битрейт
+        fmt = None
+        if f.info is not None:
+            bits = getattr(f.info, "bits_per_sample", None)
+            sr = getattr(f.info, "sample_rate", None)
+            if bits and sr:
+                fmt = f"{bits}/{sr // 1000}"
+            else:
+                br = getattr(f.info, "bitrate", None)
+                if br:
+                    fmt = f"{int(br // 1000)} kbps"
+        return duration, title, artist, album, fmt
     except Exception:  # noqa: BLE001 — метаданные не критичны
-        return None, None, None, None
+        return None, None, None, None, None
 
 
 def _read_cover(path):
@@ -528,7 +549,7 @@ def _start_track(aid, idx, offset=0.0):
     else:
         stream_path = abs_path
 
-    duration, title, artist, album = _read_meta(abs_path)
+    duration, title, artist, album, fmt = _read_meta(abs_path)
     resp = _ts_cmd({
         "cmd": "play",
         "path": stream_path,
@@ -549,6 +570,7 @@ def _start_track(aid, idx, offset=0.0):
     _OAAT_ALBUM_NAME = album or meta["name"]
     _OAAT_ARTIST = artist or meta["artist"]
     _OAAT_COVER_URL = meta["cover_url"]
+    _OAAT_FORMAT = fmt
     return {"ok": True, "album_id": aid, "track_index": idx, "file": os.path.basename(abs_path)}
 
 
@@ -589,18 +611,18 @@ def player():
     if state == "stop":
         return {"state": "stop", "album_id": None, "track_index": None, "track": None,
                 "elapsed": None, "duration": None, "album": None, "artist": None,
-                "cover_url": None, "volume": _OAAT_VOLUME}
+                "cover_url": None, "volume": _OAAT_VOLUME, "format": None}
     return {"state": state, "album_id": _OAAT_ALBUM_ID, "track_index": _OAAT_TRACK_INDEX,
             "track": _OAAT_TRACK_TITLE, "elapsed": resp.get("elapsed"),
             "duration": resp.get("duration") or _OAAT_DURATION,
             "album": _OAAT_ALBUM_NAME, "artist": _OAAT_ARTIST, "cover_url": _OAAT_COVER_URL,
-            "volume": _OAAT_VOLUME}
+            "volume": _OAAT_VOLUME, "format": _OAAT_FORMAT}
 
 
 @app.post("/api/player/{cmd}")
 def player_cmd(cmd: str):
     global _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_TRACK_NAME, _OAAT_TRACK_TITLE
-    global _OAAT_DURATION, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL
+    global _OAAT_DURATION, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL, _OAAT_FORMAT
 
     if cmd == "stop":
         _ts_cmd({"cmd": "stop"})
@@ -612,6 +634,7 @@ def player_cmd(cmd: str):
         _OAAT_ALBUM_NAME = None
         _OAAT_ARTIST = None
         _OAAT_COVER_URL = None
+        _OAAT_FORMAT = None
         return {"ok": True, "cmd": cmd}
 
     if cmd == "pause":

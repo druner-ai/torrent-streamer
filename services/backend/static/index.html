@@ -220,7 +220,7 @@ async function tracks(id, btn) {
     const a = await api('/api/albums/'+id+'/files');
     el.innerHTML = a.files.map((f, i) => {
       const ok = f.ready;
-      const st = ok ? (f.duration ? fmt(f.duration) : '') : Math.round(f.progress * 100) + '%';
+      const st = ok ? [f.duration ? fmt(f.duration) : '', f.format].filter(Boolean).join(' · ') : Math.round(f.progress * 100) + '%';
       return `<div class="track ${ok ? '' : 'disabled'}" onclick="${ok ? `playTrack(${id},${i})` : ''}">
         <span>${i+1}. ${esc(f.title || f.name)}</span>
         <span class="tr ${ok ? 'ok' : ''}">${st}</span>
@@ -257,7 +257,7 @@ async function loadQueue(aid) {
     box.innerHTML = a.files.map((f, i) => {
       const ok = f.ready;
       const cur = (p.album_id === aid && p.track_index === i);
-      const st = ok ? (f.duration ? fmt(f.duration) : '') : Math.round(f.progress * 100) + '%';
+      const st = ok ? [f.duration ? fmt(f.duration) : '', f.format].filter(Boolean).join(' · ') : Math.round(f.progress * 100) + '%';
       return `<div class="track ${ok ? '' : 'disabled'} ${cur ? 'current' : ''}" onclick="${ok ? `playTrack(${aid},${i})` : ''}">
         <span>${i+1}. ${esc(f.title || f.name)}</span>
         <span class="tr ${ok ? 'ok' : ''}">${st}</span>
@@ -281,7 +281,7 @@ async function poll() {
     } else {
       document.getElementById('now-title').textContent = p.track || ('альбом #' + p.album_id);
       document.getElementById('now-album').textContent = [p.artist, p.album].filter(Boolean).join(' — ');
-      document.getElementById('now-state').textContent = p.state;
+      document.getElementById('now-state').textContent = [p.state, p.format].filter(Boolean).join(' · ');
       const cover = document.getElementById('p-cover');
       if (p.album_id != null) { cover.src = '/api/albums/' + p.album_id + '/cover'; cover.style.display = ''; }
       else cover.style.display = 'none';

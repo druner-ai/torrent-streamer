@@ -11,9 +11,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from unittest.mock import Mock, patch
 
-import main
 import requests
 from fastapi.testclient import TestClient
+
+import main
 
 client = TestClient(main.app)
 
@@ -56,9 +57,9 @@ def test_album_files_ready_progress(tmp_path):
         assert body["id"] == aid
         assert body["files"] == [
             {"name": "01.flac", "title": "01", "path": "01.flac", "size": 100,
-             "ready": True, "progress": 1.0, "duration": None},
+             "ready": True, "progress": 1.0, "duration": None, "format": None},
             {"name": "02.flac", "title": "02", "path": "02.flac", "size": 200,
-             "ready": False, "progress": 0.5, "duration": None},
+             "ready": False, "progress": 0.5, "duration": None, "format": None},
         ]
 
 
@@ -276,6 +277,7 @@ def _reset_oaat_state():
     main._OAAT_ARTIST = None
     main._OAAT_COVER_URL = None
     main._OAAT_VOLUME = 100
+    main._OAAT_FORMAT = None
 
 
 def _seed_album_with_tracks(main, db_path):
