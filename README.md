@@ -33,6 +33,21 @@ qbittorrent-nox на том же NUC качает 18 MiB/s (10 сидов). CGNA
 docker compose up -d
 ```
 
+## API
+Защита опциональна: если задан env `API_KEY`, все эндпоинты `/api/*` (кроме `/api/health`) требуют заголовок `X-API-Key: <API_KEY>`.
+
+| Метод | Эндпоинт | Описание |
+|---|---|---|
+| POST | `/api/add` | Принимает `{ "link": ... }` (magnet/URL), добавляет торрент и создаёт альбом в каталоге. |
+| GET | `/api/albums` | Список альбомов со статусом, прогрессом, количеством треков, исполнителем и обложкой. |
+| GET | `/api/albums/{id}` | Альбом по `id` со списком треков. |
+| DELETE | `/api/albums/{id}?remove_torrent=` | Удаляет альбом из каталога; `remove_torrent=true` также удаляет торрент из qBittorrent. |
+| POST | `/api/albums/{id}/play` | Очищает очередь MPD и запускает все треки альбома. |
+| GET | `/api/albums/{id}/files` | Список файлов альбома с готовностью и прогрессом скачивания. |
+| GET | `/api/player` | Текущее состояние MPD: state, song, elapsed, duration, volume. |
+| POST | `/api/player/{cmd}` | Команда плееру: `play`, `pause`, `next`, `prev`, `stop`, `vol<число>`. |
+| GET | `/api/health` | Статус сервиса и MPD; всегда 200, доступен без API-ключа. |
+
 ## Этапы
 - [x] Этап 0 — MPD + qbittorrent-nox (база, проверено: 18 MiB/s за CGNAT, MPD играет FLAC HTTP-поток)
 - [ ] Этап 1 — Prowlarr + бэкенд + веб-UI

@@ -28,7 +28,7 @@
 
 ## Этапы
 - [x] Этап 0 (база): MPD + qbittorrent-nox; проверено «MPD играет HTTP-поток», «NUC качает 18 MiB/s»
-- [ ] Этап 1 (каталог): Prowlarr + бэкенд + веб-UI → «ссылка → альбом → play → управление»
+- [ ] Этап 1 (каталог): Prowlarr + бэкенд + веб-UI → «ссылка → альбом → play → управление» — **частично готов** (backend-эндпоинты + веб-UI готовы; Prowlarr ещё нет)
 - [ ] Этап 2 (библиотека + hi-res): закачка целиком для DSD/SACD, интеграция с Navidrome
 
 ## Протоколы (вывод научного ресёрча, Kimi)
@@ -42,6 +42,7 @@
 - 2026-11-02 Этап 0: TorrServer/MatriX НЕ качает за CGNAT (1-4 пира из 500) — заменён на qbittorrent-nox.
 - 2026-11-02 Этап 1 (частично): FastAPI backend + веб-UI развёрнуты. magnet→9 треков→каталог ✅. play → «Access denied» (MPD music_directory) — исправлено (music_directory=downloads + относительные пути), НЕ проверено.
 - 2026-11-02 ⚠️ SSH к NUC потерян: authorized_keys изменён (ключ vmx4DHq… отклонён, host key тот же A1kk…). Tailscale SSH не включён на NUC, WireGuard wg0 протух. Жду ручного фикса от Андрея.
+- 2026-11-03 Этап 1 (частично): добавлены `GET /api/health`, `DELETE /api/albums/{id}` (`remove_torrent`), `GET /api/albums/{id}/files`, защита `X-API-Key` (env `API_KEY`, кроме `/api/health`), метаданные MusicBrainz (artist, обложка), веб-UI.
 
 ## Восстановление SSH (когда Андрей у NUC)
 ```bash
