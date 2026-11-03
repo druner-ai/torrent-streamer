@@ -15,6 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from mpd import MPDClient
 from pydantic import BaseModel
 
+VERSION = "0.1.0"
+
 # --- конфиг (env с дефолтами) ---
 QBT_URL = os.getenv("QBT_URL", "http://127.0.0.1:8080")
 QBT_USER = os.getenv("QBT_USER", "admin")
@@ -25,6 +27,16 @@ DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 AUDIO_EXT = {".flac", ".mp3", ".dsf", ".dff", ".wav", ".m4a", ".aiff", ".aif", ".ape", ".ogg", ".opus", ".alac"}
 
 app = FastAPI(title="torrent-streamer")
+
+# ---------- health ----------
+@app.get("/api/health")
+def health():
+    try:
+        mpd_cmd(lambda mc: mc.status())
+        status, mpd = "ok", "ok"
+    except Exception:  # noqa: BLE001 — health всегда отдаёт 200
+        status, mpd = "degraded", "error"
+    return {"status": status, "version": VERSION, "mpd": mpd}
 
 # ---------- БД ----------
 def db():

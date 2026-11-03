@@ -29,6 +29,22 @@ def test_album_404():
     assert r.status_code == 404
 
 
+def test_health_ok_when_mpd_available():
+    with patch.object(main, "mpd_cmd") as mpd_cmd:
+        mpd_cmd.return_value = {"state": "stop"}
+        r = client.get("/api/health")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
+
+def test_health_degraded_when_mpd_fails():
+    with patch.object(main, "mpd_cmd") as mpd_cmd:
+        mpd_cmd.side_effect = Exception("mpd unavailable")
+        r = client.get("/api/health")
+        assert r.status_code == 200
+        assert r.json()["status"] == "degraded"
+
+
 def test_add_rejects_when_no_audio_files():
     with patch.object(main, "QB") as QB:
         qb = QB.return_value
