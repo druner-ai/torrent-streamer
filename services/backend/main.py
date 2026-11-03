@@ -26,6 +26,7 @@ MPD_PORT = int(os.getenv("MPD_PORT", "6600"))
 DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 API_KEY = os.getenv("API_KEY", "")
 AUDIO_EXT = {".flac", ".mp3", ".dsf", ".dff", ".wav", ".m4a", ".aiff", ".aif", ".ape", ".ogg", ".opus", ".alac"}
+MUSICBRAINZ_UA = "torrent-streamer/0.1 (druner@gmail.com)"
 
 app = FastAPI(title="torrent-streamer")
 
@@ -58,12 +59,59 @@ def db():
     c.row_factory = sqlite3.Row
     c.execute("""CREATE TABLE IF NOT EXISTS albums(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        hash TEXT UNIQUE, name TEXT, status TEXT, added_at INTEGER)""")
+        hash TEXT UNIQUE, name TEXT, status TEXT, added_at INTEGER,
+        artist TEXT, cover_url TEXT)""")
+    try:
+        c.execute("ALTER TABLE albums ADD COLUMN artist TEXT")
+    except sqlite3.OperationalError:
+        pass  # колонки уже есть в существующей БД
+    try:
+        c.execute("ALTER TABLE albums ADD COLUMN cover_url TEXT")
+    except sqlite3.OperationalError:
+        pass  # колонки уже есть в существующей БД
     c.execute("""CREATE TABLE IF NOT EXISTS tracks(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         album_id INTEGER, path TEXT, name TEXT, size INTEGER)""")
     c.commit()
     return c
+
+
+# ---------- MusicBrainz ----------
+def enrich_album(name: str) -> dict | None:
+    try:
+        r = requests.get(
+            "https://musicbrainz.org/ws/2/release/",
+            params={"query": name, "fmt": "json", "limit": 1},
+            headers={"User-Agent": MUSICBRAINZ_UA},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        releases = data.get("releases", [])
+        if not releases:
+            return None
+        rel = releases[0]
+        artist_credit = rel.get("artist-credit", [])
+        artist = None
+        if artist_credit:
+            artist = artist_credit[0].get("name")
+        mbid = rel.get("id")
+        title = rel.get("title")
+        cover_url = None
+        if mbid:
+            cr = requests.get(
+                f"https://coverartarchive.org/release/{mbid}/front",
+                headers={"User-Agent": MUSICBRAINZ_UA},
+                timeout=10,
+            )
+            cr.raise_for_status()
+            cover = cr.json()
+            images = cover.get("images", [])
+            if images:
+                cover_url = images[0].get("image")
+        return {"artist": artist, "title": title, "cover_url": cover_url}
+    except Exception:  # noqa: BLE001 — обогащение не должно ронять добавление
+        return None
 
 # ---------- qbittorrent ----------
 class QB:
@@ -155,8 +203,16 @@ def add(req: AddReq):
     # альбом
     c = db()
     try:
-        cur = c.execute("INSERT INTO albums(hash,name,status,added_at) VALUES(?,?,?,?)",
-                  (h, info["name"], "downloading", int(time.time())))
+        try:
+            meta = enrich_album(info["name"])
+        except Exception:  # noqa: BLE001 — обогащение необязательно
+            meta = None
+        artist = meta.get("artist") if meta else None
+        cover_url = meta.get("cover_url") if meta else None
+        cur = c.execute(
+            "INSERT INTO albums(hash,name,status,added_at,artist,cover_url) VALUES(?,?,?,?,?,?)",
+            (h, info["name"], "downloading", int(time.time()), artist, cover_url),
+        )
         aid = cur.lastrowid
         for f in audio:
             c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
@@ -181,7 +237,7 @@ def albums():
         progress = info["progress"] if info else 0
         out.append({"id": r["id"], "hash": r["hash"], "name": r["name"],
                     "status": status, "progress": round(progress * 100, 1),
-                    "tracks": r["n"]})
+                    "tracks": r["n"], "artist": r["artist"], "cover_url": r["cover_url"]})
     return out
 
 @app.get("/api/albums/{aid}")
@@ -192,6 +248,7 @@ def album(aid: int):
         raise HTTPException(404, "альбом не найден")
     tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
     return {"id": a["id"], "hash": a["hash"], "name": a["name"], "status": a["status"],
+            "artist": a["artist"], "cover_url": a["cover_url"],
             "tracks": [dict(t) for t in tracks]}
 
 @app.get("/api/albums/{aid}/files")

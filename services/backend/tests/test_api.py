@@ -1,5 +1,6 @@
 """Базовые тесты backend без реальных MPD/qbittorrent (мокаем QB и mpd_cmd)."""
 import os
+import sqlite3
 
 # DB_PATH до импорта main: in-memory SQLite, чтобы не трогать реальную БД.
 os.environ["DB_PATH"] = ":memory:"
@@ -8,9 +9,10 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import main
+import requests
 from fastapi.testclient import TestClient
 
 client = TestClient(main.app)
@@ -100,6 +102,52 @@ def test_add_creates_album_for_audio_files():
         body = r.json()
         assert body["tracks"] == 2
         assert body["name"] == "Great Album"
+
+
+def test_enrich_album_fetches_artist_and_cover_url():
+    mb = Mock()
+    mb.raise_for_status.return_value = None
+    mb.json.return_value = {
+        "releases": [
+            {
+                "id": "mbid-123",
+                "title": "Album Title",
+                "artist-credit": [{"name": "Artist Name"}],
+            }
+        ]
+    }
+    cover = Mock()
+    cover.raise_for_status.return_value = None
+    cover.json.return_value = {"images": [{"image": "https://example.com/front.jpg"}]}
+
+    with patch("main.requests.get", side_effect=[mb, cover]) as get:
+        result = main.enrich_album("Artist Name — Album Title")
+
+    assert result == {
+        "artist": "Artist Name",
+        "title": "Album Title",
+        "cover_url": "https://example.com/front.jpg",
+    }
+    assert get.call_count == 2
+
+
+def test_add_does_not_crash_when_enrich_fails(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(main, "QB") as QB, patch(
+        "main.requests.get", side_effect=requests.exceptions.ConnectionError("boom")
+    ):
+        qb = QB.return_value
+        qb.info.return_value = [{"name": "Great Album", "hash": "abc123"}]
+        qb.files.return_value = [{"name": "01.flac", "index": 0, "size": 100}]
+        r = client.post("/api/add", json={"link": "magnet:?xt=urn:btih:abc123"})
+        assert r.status_code == 200
+        assert r.json()["name"] == "Great Album"
+
+        conn = sqlite3.connect(str(tmp_path / "catalog.db"))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT artist, cover_url FROM albums WHERE hash=?", ("abc123",)).fetchone()
+        assert row["artist"] is None
+        assert row["cover_url"] is None
+        conn.close()
 
 
 def test_delete_album_removes_album(tmp_path):
