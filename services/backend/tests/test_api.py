@@ -267,6 +267,7 @@ def test_search_503_when_prowlarr_not_configured():
 def _reset_oaat_state():
     main._OAAT_PROC = None
     main._OAAT_ALBUM_ID = None
+    main._OAAT_WAV_PATH = None
 
 
 def _seed_album_with_tracks(main, db_path):
@@ -275,9 +276,9 @@ def _seed_album_with_tracks(main, db_path):
                     ("hash1", "Album", "downloading", 0))
     aid = cur.lastrowid
     c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
-              (aid, "01.flac", "01.flac", 100))
+              (aid, "01.wav", "01.wav", 100))
     c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
-              (aid, "02.flac", "02.flac", 200))
+              (aid, "02.wav", "02.wav", 200))
     c.commit()
     c.close()
     return aid
@@ -299,13 +300,53 @@ def test_play_streams_first_track_via_tune_bridge(tmp_path):
         r = client.post(f"/api/albums/{aid}/play")
 
         assert r.status_code == 200
-        assert r.json() == {"ok": True, "album_id": aid, "file": "01.flac"}
+        assert r.json() == {"ok": True, "album_id": aid, "file": "01.wav"}
         Popen.assert_called_once_with([
             "tune-bridge", "controller", "--target", "192.168.31.215:9740",
-            "--file", "/downloads/01.flac",
+            "--file", "/downloads/01.wav",
         ])
         assert main._OAAT_PROC is proc
         assert main._OAAT_ALBUM_ID == aid
+    _reset_oaat_state()
+
+
+def test_play_flac_converts_via_ffmpeg(tmp_path):
+    _reset_oaat_state()
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
+        main, "QB"
+    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
+        main, "TUNE_BRIDGE", "tune-bridge"
+    ), patch.object(main, "FFMPEG", "ffmpeg"), patch.object(
+        main.subprocess, "run"
+    ) as run, patch.object(main.subprocess, "Popen") as Popen:
+        # seed FLAC-трек (не-WAV → нужна конвертация)
+        c = main.db()
+        cur = c.execute("INSERT INTO albums(hash,name,status,added_at) VALUES(?,?,?,?)",
+                        ("hash1", "Album", "downloading", 0))
+        aid = cur.lastrowid
+        c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                  (aid, "01.flac", "01.flac", 100))
+        c.commit()
+        c.close()
+
+        qb = QB.return_value
+        qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
+        run.return_value.returncode = 0
+        proc = Mock()
+        Popen.return_value = proc
+
+        r = client.post(f"/api/albums/{aid}/play")
+
+        assert r.status_code == 200
+        assert r.json()["file"] == "01.flac"
+        run.assert_called_once_with(
+            ["ffmpeg", "-y", "-i", "/downloads/01.flac", "-f", "wav",
+             f"/tmp/oaat_stream_{aid}.wav"], check=False, capture_output=True)
+        Popen.assert_called_once_with([
+            "tune-bridge", "controller", "--target", "192.168.31.215:9740",
+            "--file", f"/tmp/oaat_stream_{aid}.wav",
+        ])
+        assert main._OAAT_WAV_PATH == f"/tmp/oaat_stream_{aid}.wav"
     _reset_oaat_state()
 
 

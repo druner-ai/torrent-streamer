@@ -26,6 +26,7 @@ MPD_HOST = os.getenv("MPD_HOST", "127.0.0.1")
 MPD_PORT = int(os.getenv("MPD_PORT", "6600"))
 OAAT_TARGET = os.getenv("OAAT_TARGET", "192.168.31.215:9740")
 TUNE_BRIDGE = os.getenv("TUNE_BRIDGE", "tune-bridge")
+FFMPEG = os.getenv("FFMPEG", "ffmpeg")
 DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 API_KEY = os.getenv("API_KEY", "")
 PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696")
@@ -38,6 +39,7 @@ app = FastAPI(title="torrent-streamer")
 # ---------- OAAT (tune-bridge) ----------
 _OAAT_PROC = None
 _OAAT_ALBUM_ID = None
+_OAAT_WAV_PATH = None
 
 # ---------- защита API ключом (опционально) ----------
 @app.middleware("http")
@@ -339,7 +341,7 @@ def delete_album(id: int, remove_torrent: bool = False):
 
 @app.post("/api/albums/{aid}/play")
 def play(aid: int):
-    global _OAAT_PROC, _OAAT_ALBUM_ID
+    global _OAAT_PROC, _OAAT_ALBUM_ID, _OAAT_WAV_PATH
 
     c = db()
     a = c.execute("SELECT * FROM albums WHERE id=?", (aid,)).fetchone()
@@ -356,15 +358,29 @@ def play(aid: int):
     first = tracks[0]
     abs_path = os.path.join(save_path, first["path"])
 
+    # tune-bridge умеет стримить только WAV → декодируем остальное (FLAC/DSD/mp3)
+    # через ffmpeg в lossless PCM (bit-perfect, качество сохраняется)
+    if Path(abs_path).suffix.lower() != ".wav":
+        stream_path = f"/tmp/oaat_stream_{aid}.wav"
+        conv = subprocess.run(
+            [FFMPEG, "-y", "-i", abs_path, "-f", "wav", stream_path],
+            check=False, capture_output=True,
+        )
+        if conv.returncode != 0:
+            raise HTTPException(500, f"ffmpeg не смог декодировать: {conv.stderr.decode(errors='replace')[-200:]}")
+    else:
+        stream_path = abs_path
+
     if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
         _OAAT_PROC.terminate()
     try:
         _OAAT_PROC = subprocess.Popen([
-            TUNE_BRIDGE, "controller", "--target", OAAT_TARGET, "--file", abs_path
+            TUNE_BRIDGE, "controller", "--target", OAAT_TARGET, "--file", stream_path
         ])
     except OSError as e:
         raise HTTPException(500, f"не удалось запустить tune-bridge: {e}") from e
     _OAAT_ALBUM_ID = aid
+    _OAAT_WAV_PATH = stream_path if stream_path != abs_path else None
     return {"ok": True, "album_id": aid, "file": os.path.basename(abs_path)}
 
 @app.get("/api/player")
@@ -375,14 +391,18 @@ def player():
 
 @app.post("/api/player/{cmd}")
 def player_cmd(cmd: str):
-    global _OAAT_PROC, _OAAT_ALBUM_ID
+    global _OAAT_PROC, _OAAT_ALBUM_ID, _OAAT_WAV_PATH
 
     if cmd != "stop":
         raise HTTPException(400, "через OAAT поддерживается только команда 'stop'")
     if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
         _OAAT_PROC.terminate()
+    if _OAAT_WAV_PATH:
+        with contextlib.suppress(OSError):
+            os.remove(_OAAT_WAV_PATH)
     _OAAT_PROC = None
     _OAAT_ALBUM_ID = None
+    _OAAT_WAV_PATH = None
     return {"ok": True, "cmd": cmd}
 
 # фронт (путь относительно файла — работает и в Docker, и локально)
