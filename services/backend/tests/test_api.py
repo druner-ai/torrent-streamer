@@ -67,3 +67,29 @@ def test_add_creates_album_for_audio_files():
         body = r.json()
         assert body["tracks"] == 2
         assert body["name"] == "Great Album"
+
+
+def test_delete_album_removes_album(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(main, "QB") as QB:
+        qb = QB.return_value
+        qb.info.return_value = [{"name": "Great Album", "hash": "abc123"}]
+        qb.files.return_value = [
+            {"name": "01.flac", "index": 0, "size": 100},
+            {"name": "02.flac", "index": 1, "size": 200},
+        ]
+        r = client.post("/api/add", json={"link": "magnet:?xt=urn:btih:abc123"})
+        assert r.status_code == 200
+        album_id = r.json()["album_id"]
+
+        r = client.delete(f"/api/albums/{album_id}")
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "id": album_id}
+
+        r = client.get("/api/albums")
+        assert r.status_code == 200
+        assert album_id not in [a["id"] for a in r.json()]
+
+
+def test_delete_album_404():
+    r = client.delete("/api/albums/999")
+    assert r.status_code == 404

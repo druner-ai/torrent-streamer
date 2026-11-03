@@ -67,6 +67,11 @@ class QB:
                               "firstLastPiecePrio": "true"})
         r.raise_for_status()
 
+    def delete(self, hash: str):
+        r = self.s.post(f"{QBT_URL}/api/v2/torrents/delete",
+                        data={"hashes": hash, "deleteFiles": "false"})
+        r.raise_for_status()
+
     def info(self):
         r = self.s.get(f"{QBT_URL}/api/v2/torrents/info")
         r.raise_for_status()
@@ -174,6 +179,20 @@ def album(aid: int):
     tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
     return {"id": a["id"], "hash": a["hash"], "name": a["name"], "status": a["status"],
             "tracks": [dict(t) for t in tracks]}
+
+@app.delete("/api/albums/{id}")
+def delete_album(id: int, remove_torrent: bool = False):
+    c = db()
+    a = c.execute("SELECT * FROM albums WHERE id=?", (id,)).fetchone()
+    if not a:
+        raise HTTPException(404, "альбом не найден")
+    if remove_torrent:
+        qb = QB()
+        qb.delete(a["hash"])
+    c.execute("DELETE FROM tracks WHERE album_id=?", (id,))
+    c.execute("DELETE FROM albums WHERE id=?", (id,))
+    c.commit()
+    return {"ok": True, "id": id}
 
 @app.post("/api/albums/{aid}/play")
 def play(aid: int):
