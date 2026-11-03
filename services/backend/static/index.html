@@ -8,19 +8,18 @@
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin:0; font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background:#0f1115; color:#e6e8ec; }
-  header { padding:14px 20px; border-bottom:1px solid #23262d; position:sticky; top:0; background:#0f1115; }
+  header { padding:14px 20px; border-bottom:1px solid #23262d; position:sticky; top:0; background:#0f1115; z-index:10; }
   h1 { font-size:18px; margin:0 0 10px; }
-  .add { display:flex; gap:8px; }
-  .add input { flex:1; padding:10px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
-  .add button, .ctrl button, .album button { padding:10px 16px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
-  .add button:hover, .ctrl button:hover, .album button:hover { background:#3f7dff; }
-  .search { display:flex; gap:8px; margin-top:8px; }
-  .search input { flex:1; padding:10px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
-  .search button { padding:10px 16px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
-  .search button:hover { background:#3f7dff; }
-  .key { display:flex; gap:8px; margin-top:8px; }
+  nav { display:flex; gap:8px; margin-bottom:12px; }
+  nav button { padding:9px 18px; border:0; border-radius:8px; background:#1c2027; color:#b6bcc8; cursor:pointer; font-size:14px; }
+  nav button.active { background:#2f6fed; color:#fff; }
+  .add, .search, .key { display:flex; gap:8px; margin-top:8px; }
+  .add input, .search input { flex:1; padding:10px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
+  .add button, .search button, .ctrl button, .album button { padding:10px 16px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
+  .add button:hover, .search button:hover, .ctrl button:hover, .album button:hover { background:#3f7dff; }
   .key input { width:100%; max-width:280px; padding:8px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
   main { padding:20px; max-width:900px; margin:0 auto; }
+  section[hidden] { display:none; }
   #search-results { margin-bottom:16px; }
   .result { border:1px solid #23262d; border-radius:10px; padding:12px 16px; margin-bottom:10px; background:#161a20; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
   .result .title { font-weight:600; }
@@ -28,11 +27,6 @@
   .result button { padding:8px 14px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
   .result button:hover { background:#3f7dff; }
   .result button:disabled { background:#2c313a; color:#6b7280; cursor:not-allowed; }
-  .player { position:sticky; bottom:0; background:#161a20; border-top:1px solid #23262d; padding:12px 20px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-  .now { flex:1; min-width:150px; }
-  .now .t { font-weight:600; }
-  .now .s { color:#8b93a1; font-size:13px; }
-  .ctrl { display:flex; gap:8px; align-items:center; }
   .album { border:1px solid #23262d; border-radius:10px; padding:14px 16px; margin-bottom:10px; background:#161a20; }
   .album .nm { font-weight:600; margin-bottom:4px; }
   .album .artist { color:#b6bcc8; font-size:13px; margin-bottom:2px; }
@@ -44,51 +38,82 @@
   .bar div { height:100%; background:#2f6fed; }
   .tracks { margin-top:10px; display:none; border-top:1px solid #23262d; padding-top:10px; }
   .tracks.open { display:block; }
-  .track { display:flex; justify-content:space-between; gap:8px; padding:3px 0; color:#b6bcc8; font-size:14px; }
+  .track { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:6px 8px; color:#b6bcc8; font-size:14px; border-radius:6px; cursor:pointer; }
+  .track:hover { background:#1c2129; }
+  .track.current { background:#1e2f4a; color:#fff; }
   .track .tr { color:#8b93a1; font-size:12px; white-space:nowrap; }
   .track .tr.ok { color:#5fd08a; }
+  .track.disabled { color:#5a6270; cursor:not-allowed; }
   .album button.del { background:#8a3d3d; }
   .album button.del:hover { background:#a34a4a; }
-  input[type=range] { width:90px; }
   .status { font-size:12px; padding:3px 8px; border-radius:5px; background:#23262d; }
   .status.downloading { background:#1e3a2a; color:#5fd08a; }
   .status.complete { background:#1e2f4a; color:#7fb4ff; }
+
+  /* Плеер */
+  #player-view .now { display:flex; gap:18px; align-items:center; padding:8px 0 18px; border-bottom:1px solid #23262d; }
+  #player-view .cover { width:120px; height:120px; }
+  #player-view .np { flex:1; min-width:0; }
+  #player-view .np .t { font-size:20px; font-weight:600; margin-bottom:4px; }
+  #player-view .np .a { color:#b6bcc8; }
+  #player-view .np .s { color:#8b93a1; font-size:13px; margin-top:6px; }
+  .ctrl { display:flex; gap:10px; align-items:center; justify-content:center; padding:16px 0; }
+  .ctrl button { font-size:18px; width:52px; height:52px; border-radius:50%; }
+  .queue { margin-top:6px; }
+  .queue h3 { color:#8b93a1; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.5px; margin:0 0 8px; }
 </style>
 </head>
 <body>
 <header>
   <h1>torrent-streamer</h1>
-  <div class="add">
-    <input id="link" placeholder="magnet-ссылка или URL торрента">
-    <button onclick="add()">Добавить</button>
-  </div>
-  <div class="search">
-    <input id="q" placeholder="поиск по названию">
-    <button onclick="search()">Поиск</button>
-  </div>
-  <div class="key">
-    <input id="apikey" type="password" placeholder="X-API-Key (опционально)">
+  <nav>
+    <button id="tab-catalog" class="active" onclick="switchTab('catalog')">Каталог</button>
+    <button id="tab-player" onclick="switchTab('player')">Плеер</button>
+  </nav>
+  <div id="catalog-tools">
+    <div class="add">
+      <input id="link" placeholder="magnet-ссылка или URL торрента">
+      <button onclick="add()">Добавить</button>
+    </div>
+    <div class="search">
+      <input id="q" placeholder="поиск релизов на торрентах">
+      <button onclick="search()">Поиск</button>
+    </div>
+    <div class="key">
+      <input id="apikey" type="password" placeholder="X-API-Key (опционально)">
+    </div>
   </div>
 </header>
 <main>
-  <div id="search-results"></div>
-  <div id="albums"></div>
+  <section id="catalog-view">
+    <div id="search-results"></div>
+    <div id="albums"></div>
+  </section>
+  <section id="player-view" hidden>
+    <div class="now">
+      <img class="cover" id="p-cover" alt="" style="display:none">
+      <div class="np">
+        <div class="t" id="now-title">Ничего не играет</div>
+        <div class="a" id="now-album"></div>
+        <div class="s" id="now-state"></div>
+      </div>
+    </div>
+    <div class="ctrl">
+      <button onclick="cmd('prev')">⏮</button>
+      <button id="btn-playpause" onclick="togglePlay()">▶</button>
+      <button onclick="cmd('next')">⏭</button>
+      <button onclick="cmd('stop')">⏹</button>
+    </div>
+    <div class="queue">
+      <h3 id="queue-title">Очередь</h3>
+      <div id="queue"></div>
+    </div>
+  </section>
 </main>
 
-<div class="player">
-  <div class="now">
-    <div class="t" id="now-title">—</div>
-    <div class="s" id="now-state">нет воспроизведения</div>
-  </div>
-  <div class="ctrl">
-    <button onclick="cmd('prev')">⏮</button>
-    <button id="btn-playpause" onclick="togglePlay()">▶</button>
-    <button onclick="cmd('next')">⏭</button>
-    <button onclick="cmd('stop')">⏹</button>
-  </div>
-</div>
-
 <script>
+let currentAlbumId = null;
+
 async function api(path, opts={}) {
   const headers = {'Content-Type':'application/json'};
   const k = localStorage.getItem('apikey');
@@ -101,9 +126,17 @@ const keyEl = document.getElementById('apikey');
 keyEl.value = localStorage.getItem('apikey') || '';
 keyEl.addEventListener('input', () => {
   const v = keyEl.value.trim();
-  if (v) localStorage.setItem('apikey', v);
-  else localStorage.removeItem('apikey');
+  if (v) localStorage.setItem('apikey', v); else localStorage.removeItem('apikey');
 });
+
+function switchTab(name) {
+  document.getElementById('catalog-view').hidden = (name !== 'catalog');
+  document.getElementById('player-view').hidden = (name !== 'player');
+  document.getElementById('catalog-tools').style.display = (name === 'catalog') ? '' : 'none';
+  document.getElementById('tab-catalog').classList.toggle('active', name === 'catalog');
+  document.getElementById('tab-player').classList.toggle('active', name === 'player');
+}
+
 async function add() {
   const link = document.getElementById('link').value.trim();
   if (!link) return;
@@ -172,10 +205,13 @@ async function tracks(id, btn) {
   if (el.classList.contains('open')) { el.classList.remove('open'); return; }
   if (!el.dataset.loaded) {
     const a = await api('/api/albums/'+id+'/files');
-    el.innerHTML = a.files.map(f => {
+    el.innerHTML = a.files.map((f, i) => {
       const ok = f.ready;
-      const st = ok ? 'готов ✓' : 'скачивается ' + Math.round(f.progress * 100) + '%';
-      return `<div class="track"><span>${esc(f.name)}</span><span class="tr${ok ? ' ok' : ''}">${st}</span></div>`;
+      const st = ok ? 'готов' : Math.round(f.progress * 100) + '%';
+      return `<div class="track ${ok ? '' : 'disabled'}" onclick="${ok ? `playTrack(${id},${i})` : ''}">
+        <span>${i+1}. ${esc(f.name)}</span>
+        <span class="tr ${ok ? 'ok' : ''}">${ok ? '▶ ' + st : st}</span>
+      </div>`;
     }).join('');
     el.dataset.loaded = '1';
   }
@@ -183,35 +219,64 @@ async function tracks(id, btn) {
 }
 async function del(id) {
   if (!confirm('Удалить альбом?')) return;
-  try {
-    await api('/api/albums/'+id, {method:'DELETE'});
-    load();
-  } catch(e) { alert('Ошибка: '+e.message); }
+  try { await api('/api/albums/'+id, {method:'DELETE'}); load(); }
+  catch(e) { alert('Ошибка: '+e.message); }
 }
-async function play(id) { try { await api('/api/albums/'+id+'/play', {method:'POST'}); poll(); } catch(e){ alert('Ошибка: '+e.message); } }
+async function play(id) { try { await playTrack(id, 0); } catch(e){ alert('Ошибка: '+e.message); } }
+async function playTrack(aid, idx) {
+  try { await api('/api/albums/'+aid+'/tracks/'+idx+'/play', {method:'POST'}); switchTab('player'); poll(); }
+  catch(e){ alert('Ошибка: '+e.message); }
+}
 async function cmd(c) { try { await api('/api/player/'+c, {method:'POST'}); poll(); } catch(e){} }
 async function togglePlay() {
   try {
     const p = await api('/api/player');
     if (p.state === 'playing') await cmd('pause');
     else if (p.state === 'paused') await cmd('play');
-    else alert('Сначала запусти альбом (кнопка ▶ Играть)');
+    else alert('Сначала запусти трек');
   } catch(e) { alert('Ошибка: ' + e.message); }
+}
+async function loadQueue(aid) {
+  const box = document.getElementById('queue');
+  try {
+    const a = await api('/api/albums/'+aid+'/files');
+    const p = await api('/api/player');
+    box.innerHTML = a.files.map((f, i) => {
+      const ok = f.ready;
+      const cur = (p.album_id === aid && p.track_index === i);
+      const st = ok ? 'готов' : Math.round(f.progress * 100) + '%';
+      return `<div class="track ${ok ? '' : 'disabled'} ${cur ? 'current' : ''}" onclick="${ok ? `playTrack(${aid},${i})` : ''}">
+        <span>${i+1}. ${esc(f.name)}</span>
+        <span class="tr ${ok ? 'ok' : ''}">${st}</span>
+      </div>`;
+    }).join('');
+  } catch(e) { box.innerHTML = ''; }
 }
 async function poll() {
   try {
     const p = await api('/api/player');
-    const title = document.getElementById('now-title');
     const btn = document.getElementById('btn-playpause');
-    if (p.state === 'stop') { title.textContent = '—'; }
-    else if (p.track) { title.textContent = (p.track_index !== null ? (p.track_index + 1) + '. ' : '') + p.track; }
-    else { title.textContent = 'альбом #' + p.album_id; }
-    document.getElementById('now-state').textContent = p.state;
-    if (btn) btn.textContent = (p.state === 'playing') ? '⏸' : '▶';
+    if (p.state === 'stop') {
+      document.getElementById('now-title').textContent = 'Ничего не играет';
+      document.getElementById('now-album').textContent = '';
+      document.getElementById('now-state').textContent = '';
+      document.getElementById('p-cover').style.display = 'none';
+      if (btn) btn.textContent = '▶';
+    } else {
+      document.getElementById('now-title').textContent = p.track || ('альбом #' + p.album_id);
+      document.getElementById('now-state').textContent = p.state;
+      if (btn) btn.textContent = (p.state === 'playing') ? '⏸' : '▶';
+      if (p.album_id !== currentAlbumId) {
+        currentAlbumId = p.album_id;
+        await loadQueue(p.album_id);
+        document.getElementById('queue-title').textContent = 'Очередь альбома #' + p.album_id;
+      } else {
+        loadQueue(p.album_id);
+      }
+    }
   } catch(e) {}
 }
-function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-function fmt(s){ s=+s||0; const m=Math.floor(s/60), ss=Math.floor(s%60); return m+':'+String(ss).padStart(2,'0'); }
+function esc(s){ return (s||'').replace(/[&<>\"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])); }
 function fmtSize(bytes) {
   const n = +bytes || 0;
   if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(1) + ' ГБ';

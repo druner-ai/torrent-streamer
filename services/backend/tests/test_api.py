@@ -313,6 +313,30 @@ def test_play_streams_first_track_via_tune_bridge(tmp_path):
     _reset_oaat_state()
 
 
+def test_play_track_by_index(tmp_path):
+    _reset_oaat_state()
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
+        main, "QB"
+    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
+        main, "TUNE_BRIDGE", "tune-bridge"
+    ), patch.object(main.subprocess, "Popen") as Popen:
+        aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
+        qb = QB.return_value
+        qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
+        proc = Mock()
+        Popen.return_value = proc
+
+        r = client.post(f"/api/albums/{aid}/tracks/1/play")
+
+        assert r.status_code == 200
+        assert r.json()["track_index"] == 1
+        Popen.assert_called_once_with([
+            "tune-bridge", "controller", "--target", "192.168.31.215:9740",
+            "--file", "/downloads/02.wav",
+        ])
+    _reset_oaat_state()
+
+
 def test_play_flac_converts_via_ffmpeg(tmp_path):
     _reset_oaat_state()
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(

@@ -410,6 +410,11 @@ def play(aid: int):
     return _start_track(aid, 0)
 
 
+@app.post("/api/albums/{aid}/tracks/{idx}/play")
+def play_track(aid: int, idx: int):
+    return _start_track(aid, idx)
+
+
 @app.get("/api/player")
 def player():
     if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
