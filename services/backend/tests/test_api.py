@@ -29,6 +29,39 @@ def test_album_404():
     assert r.status_code == 404
 
 
+def test_album_files_ready_progress(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(main, "QB") as QB:
+        c = main.db()
+        cur = c.execute("INSERT INTO albums(hash,name,status,added_at) VALUES(?,?,?,?)",
+                        ("hash1", "Album", "downloading", 0))
+        aid = cur.lastrowid
+        c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                  (aid, "01.flac", "01.flac", 100))
+        c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                  (aid, "02.flac", "02.flac", 200))
+        c.commit()
+        c.close()
+
+        qb = QB.return_value
+        qb.files.return_value = [
+            {"name": "01.flac", "index": 0, "size": 100, "progress": 1.0, "priority": 6},
+            {"name": "02.flac", "index": 1, "size": 200, "progress": 0.5, "priority": 6},
+        ]
+        r = client.get(f"/api/albums/{aid}/files")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["id"] == aid
+        assert body["files"] == [
+            {"name": "01.flac", "path": "01.flac", "size": 100, "ready": True, "progress": 1.0},
+            {"name": "02.flac", "path": "02.flac", "size": 200, "ready": False, "progress": 0.5},
+        ]
+
+
+def test_album_files_404():
+    r = client.get("/api/albums/999/files")
+    assert r.status_code == 404
+
+
 def test_health_ok_when_mpd_available():
     with patch.object(main, "mpd_cmd") as mpd_cmd:
         mpd_cmd.return_value = {"state": "stop"}

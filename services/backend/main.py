@@ -194,6 +194,31 @@ def album(aid: int):
     return {"id": a["id"], "hash": a["hash"], "name": a["name"], "status": a["status"],
             "tracks": [dict(t) for t in tracks]}
 
+@app.get("/api/albums/{aid}/files")
+def album_files(aid: int):
+    c = db()
+    a = c.execute("SELECT * FROM albums WHERE id=?", (aid,)).fetchone()
+    if not a:
+        raise HTTPException(404, "альбом не найден")
+    tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
+    try:
+        qb = QB()
+        files = {f["name"]: f for f in qb.files(a["hash"])}
+    except Exception:  # noqa: BLE001 — торрент не найден / qbt недоступен
+        files = {}
+    out = []
+    for t in tracks:
+        f = files.get(t["path"])
+        progress = f["progress"] if f else 0.0
+        out.append({
+            "name": t["name"],
+            "path": t["path"],
+            "size": t["size"],
+            "ready": bool(progress >= 1.0),
+            "progress": float(progress),
+        })
+    return {"id": aid, "files": out}
+
 @app.delete("/api/albums/{id}")
 def delete_album(id: int, remove_torrent: bool = False):
     c = db()
