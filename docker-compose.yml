@@ -39,6 +39,8 @@ services:
       - DB_PATH=/data/catalog.db
       - OAAT_TARGET=${OAAT_TARGET:-192.168.31.215:9740}
       - TS_CONTROLLER_SOCK=/tmp/ts-controller.sock
+      - PROWLARR_URL=${PROWLARR_URL:-http://127.0.0.1:9696}
+      - PROWLARR_API_KEY=${PROWLARR_API_KEY:-}
     volumes:
       - ./data:/data
       - /home/nuc/oaat/target/release/ts-controller:/usr/local/bin/ts-controller:ro
