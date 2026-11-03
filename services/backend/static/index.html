@@ -14,9 +14,20 @@
   .add input { flex:1; padding:10px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
   .add button, .ctrl button, .album button { padding:10px 16px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
   .add button:hover, .ctrl button:hover, .album button:hover { background:#3f7dff; }
+  .search { display:flex; gap:8px; margin-top:8px; }
+  .search input { flex:1; padding:10px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
+  .search button { padding:10px 16px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
+  .search button:hover { background:#3f7dff; }
   .key { display:flex; gap:8px; margin-top:8px; }
   .key input { width:100%; max-width:280px; padding:8px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
   main { padding:20px; max-width:900px; margin:0 auto; }
+  #search-results { margin-bottom:16px; }
+  .result { border:1px solid #23262d; border-radius:10px; padding:12px 16px; margin-bottom:10px; background:#161a20; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .result .title { font-weight:600; }
+  .result .meta { color:#8b93a1; font-size:13px; margin-top:2px; }
+  .result button { padding:8px 14px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
+  .result button:hover { background:#3f7dff; }
+  .result button:disabled { background:#2c313a; color:#6b7280; cursor:not-allowed; }
   .player { position:sticky; bottom:0; background:#161a20; border-top:1px solid #23262d; padding:12px 20px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   .now { flex:1; min-width:150px; }
   .now .t { font-weight:600; }
@@ -51,11 +62,18 @@
     <input id="link" placeholder="magnet-ссылка или URL торрента">
     <button onclick="add()">Добавить</button>
   </div>
+  <div class="search">
+    <input id="q" placeholder="поиск по названию">
+    <button onclick="search()">Поиск</button>
+  </div>
   <div class="key">
     <input id="apikey" type="password" placeholder="X-API-Key (опционально)">
   </div>
 </header>
-<main id="albums"></main>
+<main>
+  <div id="search-results"></div>
+  <div id="albums"></div>
+</main>
 
 <div class="player">
   <div class="now">
@@ -94,6 +112,33 @@ async function add() {
     const r = await api('/api/add', {method:'POST', body: JSON.stringify({link})});
     document.getElementById('link').value='';
     alert('Добавлено: ' + r.name + ' (' + r.tracks + ' треков)');
+    load();
+  } catch(e) { alert('Ошибка: ' + e.message); }
+}
+async function search() {
+  const q = document.getElementById('q').value.trim();
+  if (!q) return;
+  const box = document.getElementById('search-results');
+  try {
+    const data = await api('/api/search?q=' + encodeURIComponent(q));
+    const items = data.results || [];
+    if (!items.length) { box.innerHTML = '<p>Ничего не найдено</p>'; return; }
+    box.innerHTML = items.map(r => `
+      <div class="result">
+        <div class="info">
+          <div class="title">${esc(r.title)}</div>
+          <div class="meta">${esc(r.indexer)} · ${+r.seeders || 0} сидов · ${fmtSize(r.size)}</div>
+        </div>
+        <button ${r.magnet ? `data-magnet="${esc(r.magnet)}"` : 'disabled'} onclick="addResult(this)">Добавить</button>
+      </div>`).join('');
+  } catch(e) { box.innerHTML = '<p>Ошибка: ' + esc(e.message) + '</p>'; }
+}
+async function addResult(btn) {
+  const magnet = btn.dataset.magnet;
+  if (!magnet) return;
+  try {
+    await api('/api/add', {method:'POST', body: JSON.stringify({link: magnet})});
+    document.getElementById('search-results').innerHTML = '';
     load();
   } catch(e) { alert('Ошибка: ' + e.message); }
 }
@@ -155,6 +200,11 @@ async function poll() {
 }
 function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function fmt(s){ s=+s||0; const m=Math.floor(s/60), ss=Math.floor(s%60); return m+':'+String(ss).padStart(2,'0'); }
+function fmtSize(bytes) {
+  const n = +bytes || 0;
+  if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(1) + ' ГБ';
+  return (n / (1024 * 1024)).toFixed(1) + ' МБ';
+}
 load(); poll();
 setInterval(load, 5000);
 setInterval(poll, 3000);
