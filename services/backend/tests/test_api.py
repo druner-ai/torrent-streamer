@@ -202,3 +202,62 @@ def test_api_key_disabled_allows_albums_without_header():
         QB.return_value.info.return_value = []
         r = client.get("/api/albums")
         assert r.status_code == 200
+
+
+def test_search_returns_prowlarr_results():
+    fake = Mock()
+    fake.raise_for_status.return_value = None
+    fake.json.return_value = [
+        {
+            "title": "Album A",
+            "guid": "guid-a",
+            "indexer": "Indexer A",
+            "size": 100,
+            "seeders": 5,
+            "magnetUrl": "magnet:?xt=urn:btih:a",
+        },
+        {
+            "title": "Album B",
+            "guid": "https://example.com/a.torrent",
+            "indexer": "Indexer B",
+            "size": 200,
+            "seeders": 8,
+            "downloadUrl": "https://example.com/a.torrent",
+        },
+    ]
+
+    with patch.object(main, "PROWLARR_API_KEY", "test-key"), patch.object(
+        main.requests, "get", return_value=fake
+    ) as get:
+        r = client.get("/api/search", params={"q": "album"})
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "results": [
+            {
+                "title": "Album A",
+                "guid": "guid-a",
+                "indexer": "Indexer A",
+                "size": 100,
+                "seeders": 5,
+                "magnet": "magnet:?xt=urn:btih:a",
+            },
+            {
+                "title": "Album B",
+                "guid": "https://example.com/a.torrent",
+                "indexer": "Indexer B",
+                "size": 200,
+                "seeders": 8,
+                "magnet": "https://example.com/a.torrent",
+            },
+        ]
+    }
+    assert get.call_args.kwargs["params"] == {"query": "album", "type": "search", "limit": 10}
+    assert get.call_args.kwargs["headers"] == {"X-Api-Key": "test-key"}
+
+
+def test_search_503_when_prowlarr_not_configured():
+    with patch.object(main, "PROWLARR_API_KEY", ""):
+        r = client.get("/api/search", params={"q": "album"})
+    assert r.status_code == 503
+    assert r.json()["detail"] == "Prowlarr не настроен: задай PROWLARR_API_KEY"

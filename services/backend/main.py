@@ -25,6 +25,8 @@ MPD_HOST = os.getenv("MPD_HOST", "127.0.0.1")
 MPD_PORT = int(os.getenv("MPD_PORT", "6600"))
 DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 API_KEY = os.getenv("API_KEY", "")
+PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696")
+PROWLARR_API_KEY = os.getenv("PROWLARR_API_KEY", "")
 AUDIO_EXT = {".flac", ".mp3", ".dsf", ".dff", ".wav", ".m4a", ".aiff", ".aif", ".ape", ".ogg", ".opus", ".alac"}
 MUSICBRAINZ_UA = "torrent-streamer/0.1 (druner@gmail.com)"
 
@@ -52,6 +54,14 @@ def health():
     except Exception:  # noqa: BLE001 — health всегда отдаёт 200
         status, mpd = "degraded", "error"
     return {"status": status, "version": VERSION, "mpd": mpd}
+
+
+@app.get("/api/search")
+def search(q: str, limit: int = 10):
+    if not PROWLARR_API_KEY:
+        raise HTTPException(503, "Prowlarr не настроен: задай PROWLARR_API_KEY")
+    return {"results": prowlarr_search(q, limit)}
+
 
 # ---------- БД ----------
 def db():
@@ -112,6 +122,36 @@ def enrich_album(name: str) -> dict | None:
         return {"artist": artist, "title": title, "cover_url": cover_url}
     except Exception:  # noqa: BLE001 — обогащение не должно ронять добавление
         return None
+
+
+# ---------- Prowlarr ----------
+def prowlarr_search(query: str, limit: int = 10) -> list[dict]:
+    try:
+        r = requests.get(
+            f"{PROWLARR_URL}/api/v1/search",
+            params={"query": query, "type": "search", "limit": limit},
+            headers={"X-Api-Key": PROWLARR_API_KEY},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        results = []
+        for release in data:
+            magnet = release.get("magnetUrl") or release.get("downloadUrl")
+            if not magnet and str(release.get("guid", "")).startswith("magnet:"):
+                magnet = release.get("guid")
+            results.append({
+                "title": release.get("title"),
+                "guid": release.get("guid"),
+                "indexer": release.get("indexer"),
+                "size": release.get("size"),
+                "seeders": release.get("seeders"),
+                "magnet": magnet,
+            })
+        return results
+    except Exception:  # noqa: BLE001 — поиск не должен ронять API
+        return []
+
 
 # ---------- qbittorrent ----------
 class QB:
