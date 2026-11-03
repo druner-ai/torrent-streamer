@@ -269,11 +269,13 @@ def _reset_oaat_state():
     main._OAAT_ALBUM_ID = None
     main._OAAT_TRACK_INDEX = None
     main._OAAT_TRACK_NAME = None
+    main._OAAT_TRACK_TITLE = None
     main._OAAT_PAUSED = False
     main._OAAT_WAV_PATH = None
     main._OAAT_DURATION = None
     main._OAAT_STARTED_AT = None
     main._OAAT_PAUSED_AT = None
+    main._OAAT_OFFSET = 0.0
     main._OAAT_ALBUM_NAME = None
     main._OAAT_ARTIST = None
     main._OAAT_COVER_URL = None
@@ -340,6 +342,34 @@ def test_play_track_by_index(tmp_path):
             "tune-bridge", "controller", "--target", "192.168.31.215:9740",
             "--file", "/downloads/02.wav",
         ])
+    _reset_oaat_state()
+
+
+def test_seek_restarts_with_offset(tmp_path):
+    _reset_oaat_state()
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
+        main, "QB"
+    ) as QB, patch.object(main, "OAAT_TARGET", "192.168.31.215:9740"), patch.object(
+        main, "TUNE_BRIDGE", "tune-bridge"
+    ), patch.object(main, "FFMPEG", "ffmpeg"), patch.object(
+        main.subprocess, "run"
+    ) as run, patch.object(main.subprocess, "Popen") as Popen:
+        aid = _seed_album_with_tracks(main, str(tmp_path / "catalog.db"))
+        qb = QB.return_value
+        qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
+        run.return_value.returncode = 0
+        proc = Mock()
+        proc.poll.return_value = None
+        Popen.return_value = proc
+        client.post(f"/api/albums/{aid}/play")
+
+        r = client.post("/api/player/seek?position=60")
+
+        assert r.status_code == 200
+        run.assert_called_once_with(
+            ["ffmpeg", "-y", "-ss", "60.0", "-i", "/downloads/01.wav",
+             "-f", "wav", f"/tmp/oaat_stream_{aid}.wav"], check=False, capture_output=True)
+        assert main._OAAT_OFFSET == 60.0
     _reset_oaat_state()
 
 
@@ -500,7 +530,7 @@ def test_player_state_reflects_process_aliveness(tmp_path):
 
 def test_player_rejects_unknown_commands():
     _reset_oaat_state()
-    for cmd in ["vol", "seek", "foo"]:
+    for cmd in ["vol", "foo"]:
         r = client.post(f"/api/player/{cmd}")
         assert r.status_code == 400
     _reset_oaat_state()

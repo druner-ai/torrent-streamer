@@ -43,11 +43,13 @@ _OAAT_PROC = None
 _OAAT_ALBUM_ID = None
 _OAAT_TRACK_INDEX = None
 _OAAT_TRACK_NAME = None
+_OAAT_TRACK_TITLE = None
 _OAAT_PAUSED = False
 _OAAT_WAV_PATH = None
 _OAAT_DURATION = None
 _OAAT_STARTED_AT = None
 _OAAT_PAUSED_AT = None
+_OAAT_OFFSET = 0.0
 _OAAT_ALBUM_NAME = None
 _OAAT_ARTIST = None
 _OAAT_COVER_URL = None
@@ -367,14 +369,22 @@ def _current_tracks(aid):
     return tracks, save_path, meta
 
 
-def _read_duration(path):
+def _read_meta(path):
+    """duration + title/artist/album из тегов (fallback — None)."""
     try:
         f = MutagenFile(path)
-        if f is not None and f.info is not None:
-            return float(f.info.length)
-    except Exception:  # noqa: BLE001, S110 — длительность не критична
-        pass
-    return None
+        if f is None:
+            return None, None, None, None
+        duration = float(f.info.length) if f.info is not None else None
+        title = artist = album = None
+        tags = getattr(f, "tags", None)
+        if tags:
+            title = (tags.get("title") or [None])[0]
+            artist = (tags.get("artist") or [None])[0]
+            album = (tags.get("album") or [None])[0]
+        return duration, title, artist, album
+    except Exception:  # noqa: BLE001 — метаданные не критичны
+        return None, None, None, None
 
 
 def _stop_oaat():
@@ -389,9 +399,9 @@ def _stop_oaat():
         _OAAT_WAV_PATH = None
 
 
-def _start_track(aid, idx):
-    global _OAAT_PROC, _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_TRACK_NAME, _OAAT_PAUSED, _OAAT_WAV_PATH
-    global _OAAT_DURATION, _OAAT_STARTED_AT, _OAAT_PAUSED_AT, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL
+def _start_track(aid, idx, offset=0.0):
+    global _OAAT_PROC, _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_TRACK_NAME, _OAAT_TRACK_TITLE, _OAAT_PAUSED, _OAAT_WAV_PATH
+    global _OAAT_DURATION, _OAAT_STARTED_AT, _OAAT_PAUSED_AT, _OAAT_OFFSET, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL
     tracks, save_path, meta = _current_tracks(aid)
     if not (0 <= idx < len(tracks)):
         raise HTTPException(400, "нет такого трека в альбоме")
@@ -399,13 +409,14 @@ def _start_track(aid, idx):
     track = tracks[idx]
     abs_path = os.path.join(save_path, track["path"])
     # tune-bridge умеет стримить только WAV → декодируем остальное (FLAC/DSD/mp3)
-    # через ffmpeg в lossless PCM (bit-perfect, качество сохраняется)
-    if Path(abs_path).suffix.lower() != ".wav":
+    # через ffmpeg в lossless PCM; при перемотке (offset>0) тоже через ffmpeg с -ss
+    if offset > 0 or Path(abs_path).suffix.lower() != ".wav":
         stream_path = f"/tmp/oaat_stream_{aid}.wav"
-        conv = subprocess.run(
-            [FFMPEG, "-y", "-i", abs_path, "-f", "wav", stream_path],
-            check=False, capture_output=True,
-        )
+        cmd = [FFMPEG, "-y"]
+        if offset > 0:
+            cmd += ["-ss", str(offset)]
+        cmd += ["-i", abs_path, "-f", "wav", stream_path]
+        conv = subprocess.run(cmd, check=False, capture_output=True)
         if conv.returncode != 0:
             raise HTTPException(500, f"ffmpeg не смог декодировать: {conv.stderr.decode(errors='replace')[-200:]}")
     else:
@@ -416,16 +427,19 @@ def _start_track(aid, idx):
         ])
     except OSError as e:
         raise HTTPException(500, f"не удалось запустить tune-bridge: {e}") from e
+    duration, title, artist, album = _read_meta(abs_path)
     _OAAT_ALBUM_ID = aid
     _OAAT_TRACK_INDEX = idx
     _OAAT_TRACK_NAME = track["name"]
+    _OAAT_TRACK_TITLE = title or track["name"]
     _OAAT_PAUSED = False
     _OAAT_WAV_PATH = stream_path if stream_path != abs_path else None
-    _OAAT_DURATION = _read_duration(abs_path)
+    _OAAT_DURATION = duration
     _OAAT_STARTED_AT = time.time()
     _OAAT_PAUSED_AT = None
-    _OAAT_ALBUM_NAME = meta["name"]
-    _OAAT_ARTIST = meta["artist"]
+    _OAAT_OFFSET = offset
+    _OAAT_ALBUM_NAME = album or meta["name"]
+    _OAAT_ARTIST = artist or meta["artist"]
     _OAAT_COVER_URL = meta["cover_url"]
     return {"ok": True, "album_id": aid, "track_index": idx, "file": os.path.basename(abs_path)}
 
@@ -440,6 +454,14 @@ def play_track(aid: int, idx: int):
     return _start_track(aid, idx)
 
 
+@app.post("/api/player/seek")
+def player_seek(position: float):
+    if _OAAT_ALBUM_ID is None or _OAAT_TRACK_INDEX is None:
+        raise HTTPException(400, "сначала запусти трек")
+    position = max(position, 0)
+    return _start_track(_OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, offset=position)
+
+
 @app.get("/api/player")
 def player():
     if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
@@ -448,8 +470,9 @@ def player():
             elapsed = _OAAT_PAUSED_AT - (_OAAT_STARTED_AT or time.time())
         else:
             elapsed = time.time() - (_OAAT_STARTED_AT or time.time())
+        elapsed += _OAAT_OFFSET
         return {"state": state, "album_id": _OAAT_ALBUM_ID, "track_index": _OAAT_TRACK_INDEX,
-                "track": _OAAT_TRACK_NAME, "elapsed": elapsed, "duration": _OAAT_DURATION,
+                "track": _OAAT_TRACK_TITLE, "elapsed": elapsed, "duration": _OAAT_DURATION,
                 "album": _OAAT_ALBUM_NAME, "artist": _OAAT_ARTIST, "cover_url": _OAAT_COVER_URL}
     return {"state": "stop", "album_id": None, "track_index": None, "track": None,
             "elapsed": None, "duration": None, "album": None, "artist": None, "cover_url": None}
@@ -464,10 +487,12 @@ def player_cmd(cmd: str):
         _OAAT_ALBUM_ID = None
         _OAAT_TRACK_INDEX = None
         _OAAT_TRACK_NAME = None
+        _OAAT_TRACK_TITLE = None
         _OAAT_PAUSED = False
         _OAAT_DURATION = None
         _OAAT_STARTED_AT = None
         _OAAT_PAUSED_AT = None
+        _OAAT_OFFSET = 0.0
         _OAAT_ALBUM_NAME = None
         _OAAT_ARTIST = None
         _OAAT_COVER_URL = None
