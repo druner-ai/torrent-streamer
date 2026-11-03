@@ -61,6 +61,10 @@
   .ctrl button { font-size:18px; width:52px; height:52px; border-radius:50%; }
   .queue { margin-top:6px; }
   .queue h3 { color:#8b93a1; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.5px; margin:0 0 8px; }
+  .progress { display:flex; align-items:center; gap:10px; margin-top:10px; }
+  .pbar { flex:1; height:5px; background:#23262d; border-radius:3px; overflow:hidden; }
+  .pbar div { height:100%; background:#2f6fed; width:0%; }
+  .progress span { color:#8b93a1; font-size:12px; min-width:36px; text-align:center; }
 </style>
 </head>
 <body>
@@ -96,6 +100,11 @@
         <div class="t" id="now-title">Ничего не играет</div>
         <div class="a" id="now-album"></div>
         <div class="s" id="now-state"></div>
+        <div class="progress">
+          <span id="p-elapsed">0:00</span>
+          <div class="pbar"><div id="p-fill"></div></div>
+          <span id="p-duration">0:00</span>
+        </div>
       </div>
     </div>
     <div class="ctrl">
@@ -261,21 +270,38 @@ async function poll() {
       document.getElementById('now-album').textContent = '';
       document.getElementById('now-state').textContent = '';
       document.getElementById('p-cover').style.display = 'none';
+      updateProgress(null);
       if (btn) btn.textContent = '▶';
     } else {
       document.getElementById('now-title').textContent = p.track || ('альбом #' + p.album_id);
+      document.getElementById('now-album').textContent = [p.artist, p.album].filter(Boolean).join(' — ');
       document.getElementById('now-state').textContent = p.state;
+      const cover = document.getElementById('p-cover');
+      if (p.cover_url) { cover.src = p.cover_url; cover.style.display = ''; }
+      else cover.style.display = 'none';
+      updateProgress(p);
       if (btn) btn.textContent = (p.state === 'playing') ? '⏸' : '▶';
       if (p.album_id !== currentAlbumId) {
         currentAlbumId = p.album_id;
         await loadQueue(p.album_id);
-        document.getElementById('queue-title').textContent = 'Очередь альбома #' + p.album_id;
+        document.getElementById('queue-title').textContent = p.album || ('Очередь альбома #' + p.album_id);
       } else {
         loadQueue(p.album_id);
       }
     }
   } catch(e) {}
 }
+function updateProgress(p) {
+  const el = document.getElementById('p-elapsed');
+  const dur = document.getElementById('p-duration');
+  const fill = document.getElementById('p-fill');
+  const e = p ? (+p.elapsed || 0) : 0;
+  const d = p ? (+p.duration || 0) : 0;
+  el.textContent = fmt(e);
+  dur.textContent = d ? fmt(d) : '—';
+  fill.style.width = (d ? Math.min(100, e / d * 100) : 0) + '%';
+}
+function fmt(s) { s = +s || 0; const m = Math.floor(s / 60), ss = Math.floor(s % 60); return m + ':' + String(ss).padStart(2, '0'); }
 function esc(s){ return (s||'').replace(/[&<>\"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])); }
 function fmtSize(bytes) {
   const n = +bytes || 0;

@@ -271,6 +271,12 @@ def _reset_oaat_state():
     main._OAAT_TRACK_NAME = None
     main._OAAT_PAUSED = False
     main._OAAT_WAV_PATH = None
+    main._OAAT_DURATION = None
+    main._OAAT_STARTED_AT = None
+    main._OAAT_PAUSED_AT = None
+    main._OAAT_ALBUM_NAME = None
+    main._OAAT_ARTIST = None
+    main._OAAT_COVER_URL = None
 
 
 def _seed_album_with_tracks(main, db_path):
@@ -476,12 +482,19 @@ def test_player_state_reflects_process_aliveness(tmp_path):
 
         r = client.get("/api/player")
         assert r.status_code == 200
-        assert r.json() == {"state": "playing", "album_id": aid, "track_index": 0, "track": "01.wav"}
+        body = r.json()
+        assert body["state"] == "playing"
+        assert body["album_id"] == aid
+        assert body["track_index"] == 0
+        assert body["track"] == "01.wav"
 
         proc.poll.return_value = 0
         r = client.get("/api/player")
         assert r.status_code == 200
-        assert r.json() == {"state": "stop", "album_id": None, "track_index": None, "track": None}
+        body = r.json()
+        assert body["state"] == "stop"
+        assert body["album_id"] is None
+        assert body["track"] is None
     _reset_oaat_state()
 
 

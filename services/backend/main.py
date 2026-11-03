@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from mpd import MPDClient
+from mutagen import File as MutagenFile
 from pydantic import BaseModel
 
 VERSION = "0.1.0"
@@ -44,6 +45,12 @@ _OAAT_TRACK_INDEX = None
 _OAAT_TRACK_NAME = None
 _OAAT_PAUSED = False
 _OAAT_WAV_PATH = None
+_OAAT_DURATION = None
+_OAAT_STARTED_AT = None
+_OAAT_PAUSED_AT = None
+_OAAT_ALBUM_NAME = None
+_OAAT_ARTIST = None
+_OAAT_COVER_URL = None
 
 # ---------- защита API ключом (опционально) ----------
 @app.middleware("http")
@@ -356,7 +363,18 @@ def _current_tracks(aid):
     save_path = info["save_path"] if info else None
     if not save_path:
         raise HTTPException(500, "не найден путь загрузки")
-    return tracks, save_path
+    meta = {"name": a["name"], "artist": a["artist"], "cover_url": a["cover_url"]}
+    return tracks, save_path, meta
+
+
+def _read_duration(path):
+    try:
+        f = MutagenFile(path)
+        if f is not None and f.info is not None:
+            return float(f.info.length)
+    except Exception:  # noqa: BLE001, S110 — длительность не критична
+        pass
+    return None
 
 
 def _stop_oaat():
@@ -373,7 +391,8 @@ def _stop_oaat():
 
 def _start_track(aid, idx):
     global _OAAT_PROC, _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_TRACK_NAME, _OAAT_PAUSED, _OAAT_WAV_PATH
-    tracks, save_path = _current_tracks(aid)
+    global _OAAT_DURATION, _OAAT_STARTED_AT, _OAAT_PAUSED_AT, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL
+    tracks, save_path, meta = _current_tracks(aid)
     if not (0 <= idx < len(tracks)):
         raise HTTPException(400, "нет такого трека в альбоме")
     _stop_oaat()
@@ -402,6 +421,12 @@ def _start_track(aid, idx):
     _OAAT_TRACK_NAME = track["name"]
     _OAAT_PAUSED = False
     _OAAT_WAV_PATH = stream_path if stream_path != abs_path else None
+    _OAAT_DURATION = _read_duration(abs_path)
+    _OAAT_STARTED_AT = time.time()
+    _OAAT_PAUSED_AT = None
+    _OAAT_ALBUM_NAME = meta["name"]
+    _OAAT_ARTIST = meta["artist"]
+    _OAAT_COVER_URL = meta["cover_url"]
     return {"ok": True, "album_id": aid, "track_index": idx, "file": os.path.basename(abs_path)}
 
 
@@ -419,14 +444,20 @@ def play_track(aid: int, idx: int):
 def player():
     if _OAAT_PROC is not None and _OAAT_PROC.poll() is None:
         state = "paused" if _OAAT_PAUSED else "playing"
+        if state == "paused" and _OAAT_PAUSED_AT is not None:
+            elapsed = _OAAT_PAUSED_AT - (_OAAT_STARTED_AT or time.time())
+        else:
+            elapsed = time.time() - (_OAAT_STARTED_AT or time.time())
         return {"state": state, "album_id": _OAAT_ALBUM_ID, "track_index": _OAAT_TRACK_INDEX,
-                "track": _OAAT_TRACK_NAME}
-    return {"state": "stop", "album_id": None, "track_index": None, "track": None}
+                "track": _OAAT_TRACK_NAME, "elapsed": elapsed, "duration": _OAAT_DURATION,
+                "album": _OAAT_ALBUM_NAME, "artist": _OAAT_ARTIST, "cover_url": _OAAT_COVER_URL}
+    return {"state": "stop", "album_id": None, "track_index": None, "track": None,
+            "elapsed": None, "duration": None, "album": None, "artist": None, "cover_url": None}
 
 
 @app.post("/api/player/{cmd}")
 def player_cmd(cmd: str):
-    global _OAAT_PAUSED, _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX
+    global _OAAT_PAUSED, _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_STARTED_AT, _OAAT_PAUSED_AT
 
     if cmd == "stop":
         _stop_oaat()
@@ -434,6 +465,12 @@ def player_cmd(cmd: str):
         _OAAT_TRACK_INDEX = None
         _OAAT_TRACK_NAME = None
         _OAAT_PAUSED = False
+        _OAAT_DURATION = None
+        _OAAT_STARTED_AT = None
+        _OAAT_PAUSED_AT = None
+        _OAAT_ALBUM_NAME = None
+        _OAAT_ARTIST = None
+        _OAAT_COVER_URL = None
         return {"ok": True, "cmd": cmd}
 
     if cmd == "pause":
@@ -441,12 +478,16 @@ def player_cmd(cmd: str):
             raise HTTPException(400, "нечего ставить на паузу")
         os.kill(_OAAT_PROC.pid, signal.SIGSTOP)
         _OAAT_PAUSED = True
+        _OAAT_PAUSED_AT = time.time()
         return {"ok": True, "cmd": cmd}
 
     if cmd == "play":  # resume после паузы
         if _OAAT_PROC is None or _OAAT_PROC.poll() is not None:
             raise HTTPException(400, "нечего продолжать")
         os.kill(_OAAT_PROC.pid, signal.SIGCONT)
+        if _OAAT_PAUSED_AT is not None:
+            _OAAT_STARTED_AT += time.time() - _OAAT_PAUSED_AT
+        _OAAT_PAUSED_AT = None
         _OAAT_PAUSED = False
         return {"ok": True, "cmd": cmd}
 
