@@ -14,6 +14,8 @@
   .add input { flex:1; padding:10px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
   .add button, .ctrl button, .album button { padding:10px 16px; border:0; border-radius:8px; background:#2f6fed; color:#fff; cursor:pointer; }
   .add button:hover, .ctrl button:hover, .album button:hover { background:#3f7dff; }
+  .key { display:flex; gap:8px; margin-top:8px; }
+  .key input { width:100%; max-width:280px; padding:8px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
   main { padding:20px; max-width:900px; margin:0 auto; }
   .player { position:sticky; bottom:0; background:#161a20; border-top:1px solid #23262d; padding:12px 20px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   .now { flex:1; min-width:150px; }
@@ -22,12 +24,20 @@
   .ctrl { display:flex; gap:8px; align-items:center; }
   .album { border:1px solid #23262d; border-radius:10px; padding:14px 16px; margin-bottom:10px; background:#161a20; }
   .album .nm { font-weight:600; margin-bottom:4px; }
+  .album .artist { color:#b6bcc8; font-size:13px; margin-bottom:2px; }
   .album .meta { color:#8b93a1; font-size:13px; }
+  .head { display:flex; gap:12px; align-items:flex-start; }
+  .cover { width:64px; height:64px; border-radius:8px; object-fit:cover; flex:none; }
+  .info { flex:1; min-width:0; }
   .bar { height:5px; background:#23262d; border-radius:3px; margin-top:8px; overflow:hidden; }
   .bar div { height:100%; background:#2f6fed; }
   .tracks { margin-top:10px; display:none; border-top:1px solid #23262d; padding-top:10px; }
   .tracks.open { display:block; }
-  .track { padding:3px 0; color:#b6bcc8; font-size:14px; }
+  .track { display:flex; justify-content:space-between; gap:8px; padding:3px 0; color:#b6bcc8; font-size:14px; }
+  .track .tr { color:#8b93a1; font-size:12px; white-space:nowrap; }
+  .track .tr.ok { color:#5fd08a; }
+  .album button.del { background:#8a3d3d; }
+  .album button.del:hover { background:#a34a4a; }
   input[type=range] { width:90px; }
   .status { font-size:12px; padding:3px 8px; border-radius:5px; background:#23262d; }
   .status.downloading { background:#1e3a2a; color:#5fd08a; }
@@ -40,6 +50,9 @@
   <div class="add">
     <input id="link" placeholder="magnet-ссылка или URL торрента">
     <button onclick="add()">Добавить</button>
+  </div>
+  <div class="key">
+    <input id="apikey" type="password" placeholder="X-API-Key (опционально)">
   </div>
 </header>
 <main id="albums"></main>
@@ -60,10 +73,20 @@
 
 <script>
 async function api(path, opts={}) {
-  const r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  const headers = {'Content-Type':'application/json'};
+  const k = localStorage.getItem('apikey');
+  if (k) headers['X-API-Key'] = k;
+  const r = await fetch(path, {headers, ...opts});
   if (!r.ok) { const e = await r.text(); throw new Error(e); }
   return r.json();
 }
+const keyEl = document.getElementById('apikey');
+keyEl.value = localStorage.getItem('apikey') || '';
+keyEl.addEventListener('input', () => {
+  const v = keyEl.value.trim();
+  if (v) localStorage.setItem('apikey', v);
+  else localStorage.removeItem('apikey');
+});
 async function add() {
   const link = document.getElementById('link').value.trim();
   if (!link) return;
@@ -79,15 +102,22 @@ async function load() {
     const albums = await api('/api/albums');
     document.getElementById('albums').innerHTML = albums.map(a => `
       <div class="album">
-        <div class="nm">${esc(a.name)}</div>
-        <div class="meta">
-          <span class="status ${a.status}">${a.status}</span>
-          ${a.progress}% · ${a.tracks} треков
+        <div class="head">
+          ${a.cover_url ? `<img class="cover" src="${esc(a.cover_url)}" alt="">` : ''}
+          <div class="info">
+            <div class="nm">${esc(a.name)}</div>
+            ${a.artist ? `<div class="artist">${esc(a.artist)}</div>` : ''}
+            <div class="meta">
+              <span class="status ${a.status}">${a.status}</span>
+              ${a.progress}% · ${a.tracks} треков
+            </div>
+            <div class="bar"><div style="width:${a.progress}%"></div></div>
+          </div>
         </div>
-        <div class="bar"><div style="width:${a.progress}%"></div></div>
         <div style="margin-top:10px">
           <button onclick="play(${a.id})">▶ Играть</button>
           <button onclick="tracks(${a.id}, this)">Треки</button>
+          <button class="del" onclick="del(${a.id})">Удалить</button>
         </div>
         <div class="tracks" id="tr-${a.id}"></div>
       </div>`).join('');
@@ -97,11 +127,22 @@ async function tracks(id, btn) {
   const el = document.getElementById('tr-'+id);
   if (el.classList.contains('open')) { el.classList.remove('open'); return; }
   if (!el.dataset.loaded) {
-    const a = await api('/api/albums/'+id);
-    el.innerHTML = a.tracks.map(t => `<div class="track">${esc(t.name)}</div>`).join('');
+    const a = await api('/api/albums/'+id+'/files');
+    el.innerHTML = a.files.map(f => {
+      const ok = f.ready;
+      const st = ok ? 'готов ✓' : 'скачивается ' + Math.round(f.progress * 100) + '%';
+      return `<div class="track"><span>${esc(f.name)}</span><span class="tr${ok ? ' ok' : ''}">${st}</span></div>`;
+    }).join('');
     el.dataset.loaded = '1';
   }
   el.classList.add('open');
+}
+async function del(id) {
+  if (!confirm('Удалить альбом?')) return;
+  try {
+    await api('/api/albums/'+id, {method:'DELETE'});
+    load();
+  } catch(e) { alert('Ошибка: '+e.message); }
 }
 async function play(id) { try { await api('/api/albums/'+id+'/play', {method:'POST'}); poll(); } catch(e){ alert('Ошибка: '+e.message); } }
 async function cmd(c) { try { await api('/api/player/'+c, {method:'POST'}); poll(); } catch(e){} }
