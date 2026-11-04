@@ -25,6 +25,15 @@
   .chips { display:flex; gap:8px; flex-wrap:wrap; }
   .chip { padding:6px 14px; border-radius:16px; background:#1c2027; color:#b6bcc8; cursor:pointer; font-size:13px; border:1px solid #2c313a; }
   .chip.active { background:#2f6fed; color:#fff; }
+  .artists { display:flex; flex-direction:column; gap:8px; }
+  .artist-row { display:flex; align-items:center; gap:14px; padding:10px 14px; background:#161a20; border:1px solid #23262d; border-radius:10px; cursor:pointer; }
+  .artist-row:hover { background:#1c2027; }
+  .artist-row .cover { width:48px; height:48px; border-radius:8px; object-fit:cover; flex:none; }
+  .artist-row .nm { font-weight:600; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .artist-row .cnt { color:#8b93a1; font-size:13px; }
+  .crumbs { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+  .crumbs .chip { cursor:pointer; }
+  .crumb-name { font-weight:600; }
   #search-results { margin-bottom:16px; }
   .result { border:1px solid #23262d; border-radius:10px; padding:12px 16px; margin-bottom:10px; background:#161a20; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
   .result .title { font-weight:600; }
@@ -127,14 +136,14 @@
   <section id="catalog-view">
     <div id="search-results"></div>
     <div class="toolbar">
-      <select id="sort" onchange="renderAlbums()">
+      <select id="sort" onchange="renderCatalog()">
         <option value="added">Недавно добавлено</option>
         <option value="year_desc">По году ↓</option>
         <option value="year_asc">По году ↑</option>
       </select>
       <div id="genres" class="chips"></div>
     </div>
-    <div id="albums" class="grid"></div>
+    <div id="albums"></div>
   </section>
   <section id="player-view" hidden>
     <div class="now">
@@ -284,30 +293,78 @@ function fileStatus(f) {
 let albumsCache = [];
 let activeGenre = null;
 let showFav = false;
+let activeArtist = null;   // null = список исполнителей
+
+const COVER_PLACEHOLDER = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%231c2027%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2275%22 y=%2278%22 fill=%22%235a6270%22 font-size=%2230%22 text-anchor=%22middle%22%3E♪%3C/text%3E%3C/svg%3E';
 
 async function load() {
   try {
     albumsCache = await api('/api/albums');
     renderGenres();
-    renderAlbums();
+    renderCatalog();
   } catch(e) { document.getElementById('albums').innerHTML = '<p>Ошибка: '+esc(e.message)+'</p>'; }
 }
-function renderAlbums() {
+function filtered() {
   let list = [...albumsCache];
   if (showFav) list = list.filter(a => a.favorite);
   if (activeGenre) list = list.filter(a => a.genre === activeGenre);
-  const sort = document.getElementById('sort').value;
-  if (sort === 'year_desc') list.sort((a,b) => (+b.year||0) - (+a.year||0));
-  else if (sort === 'year_asc') list.sort((a,b) => (+a.year||0) - (+b.year||0));
-  document.getElementById('albums').innerHTML = list.map(a => `
+  return list;
+}
+function cardHtml(a) {
+  return `
     <div class="card" onclick="openAlbum(${a.id})">
       <div class="cover-wrap">
-        <img class="cover" src="/api/albums/${a.id}/cover" alt="" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%231c2027%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2275%22 y=%2278%22 fill=%22%235a6270%22 font-size=%2230%22 text-anchor=%22middle%22%3E♪%3C/text%3E%3C/svg%3E'">
+        <img class="cover" src="/api/albums/${a.id}/cover" alt="" onerror="this.src='${COVER_PLACEHOLDER}'">
         <span class="badge ${a.status}">${albumBadge(a)}</span>
       </div>
       <div class="nm">${esc(a.name)}</div>
       ${a.artist ? `<div class="artist">${esc(a.artist)}${a.year ? ' · ' + esc(a.year) : ''}</div>` : ''}
-    </div>`).join('');
+    </div>`;
+}
+function renderCatalog() {
+  const box = document.getElementById('albums');
+  if (activeArtist !== null) renderArtistAlbums(box);
+  else renderArtists(box);
+}
+function renderArtists(box) {
+  const map = {};
+  for (const a of filtered()) {
+    const key = a.artist || 'Разное';
+    (map[key] = map[key] || []).push(a);
+  }
+  const names = Object.keys(map).sort((x, y) => x.localeCompare(y, 'ru'));
+  if (!names.length) {
+    box.innerHTML = '<p style="color:#8b93a1">Пока пусто — добавь альбом</p>';
+    return;
+  }
+  box.innerHTML = '<div class="artists">' + names.map(n => {
+    const first = map[n][0];
+    return `<div class="artist-row" onclick="openArtist('${esc(n)}')">
+      <img class="cover" src="/api/albums/${first.id}/cover" alt="" onerror="this.src='${COVER_PLACEHOLDER}'">
+      <div class="nm">${esc(n)}</div>
+      <div class="cnt">${map[n].length}</div>
+    </div>`;
+  }).join('') + '</div>';
+}
+function openArtist(name) {
+  activeArtist = name;
+  renderCatalog();
+}
+function backToArtists() {
+  activeArtist = null;
+  renderCatalog();
+}
+function renderArtistAlbums(box) {
+  let list = filtered().filter(a => (a.artist || 'Разное') === activeArtist);
+  const sort = document.getElementById('sort').value;
+  if (sort === 'year_desc') list.sort((a, b) => (+b.year || 0) - (+a.year || 0));
+  else if (sort === 'year_asc') list.sort((a, b) => (+a.year || 0) - (+b.year || 0));
+  box.innerHTML = `
+    <div class="crumbs">
+      <button class="chip" onclick="backToArtists()">← Исполнители</button>
+      <span class="crumb-name">${esc(activeArtist)}</span>
+    </div>
+    <div class="grid">${list.map(cardHtml).join('')}</div>`;
 }
 function renderGenres() {
   const genres = [...new Set(albumsCache.map(a => a.genre).filter(Boolean))].sort();
@@ -321,13 +378,13 @@ function renderGenres() {
 function toggleFavFilter() {
   showFav = !showFav;
   renderGenres();
-  renderAlbums();
+  renderCatalog();
 }
 function filterGenre(el) {
   const g = el.textContent;
   activeGenre = (activeGenre === g) ? null : g;
   renderGenres();
-  renderAlbums();
+  renderCatalog();
 }
 async function openAlbum(id) {
   openAlbumId = id;
@@ -411,7 +468,7 @@ async function toggleFav(id) {
     setFavBtn(r.favorite);
     const a = albumsCache.find(x => x.id === id);
     if (a) a.favorite = r.favorite;
-    renderAlbums();
+    renderCatalog();
     renderGenres();
   } catch(e) { alert('Ошибка: ' + e.message); }
 }
