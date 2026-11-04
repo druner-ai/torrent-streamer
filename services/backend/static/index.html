@@ -154,8 +154,16 @@
   </section>
   <section id="tracker-view" hidden>
     <div class="toolbar">
+      <select id="tracker-section" onchange="onSectionChange()"></select>
       <button onclick="refreshTracker()">🔄 Обновить каталог</button>
       <span id="tracker-count" style="color:#8b93a1"></span>
+    </div>
+    <div class="toolbar" style="gap:14px">
+      <label style="color:#8b93a1;font-size:13px">мин. сидов
+        <input id="f-seeders" type="number" min="0" value="0" style="width:56px" onchange="applyFilters()">
+      </label>
+      <label style="color:#8b93a1;font-size:13px"><input id="f-lossless" type="checkbox" onchange="applyFilters()"> только lossless</label>
+      <input id="f-q" placeholder="поиск в каталоге" style="flex:1" oninput="applyFilters()">
     </div>
     <div id="tracker-results"></div>
   </section>
@@ -259,31 +267,70 @@ function switchTab(name) {
   document.getElementById('tab-catalog').classList.toggle('active', name === 'catalog');
   document.getElementById('tab-player').classList.toggle('active', name === 'player');
   document.getElementById('tab-tracker').classList.toggle('active', name === 'tracker');
-  if (name === 'tracker') loadTracker();
+  if (name === 'tracker') { loadSections(); loadTracker(); }
 }
 
+let trackerCache = [];
+let sections = [];
+let activeSection = null;
+
+async function loadSections() {
+  try {
+    const d = await api('/api/catalog/sections');
+    sections = d.sections || [];
+    const sel = document.getElementById('tracker-section');
+    sel.innerHTML = '<option value="">Все разделы</option>' +
+      sections.map(s => `<option value="${esc(s.id)}">${esc(s.title)}</option>`).join('');
+  } catch(e) {}
+}
+function onSectionChange() {
+  activeSection = document.getElementById('tracker-section').value || null;
+  applyFilters();
+}
+function sectionForumIds() {
+  if (!activeSection) return null;
+  const s = sections.find(x => x.id === activeSection);
+  return s ? s.forums.map(f => f.id) : null;
+}
 async function loadTracker() {
   const box = document.getElementById('tracker-results');
   try {
     const d = await api('/api/catalog');
-    const items = d.items || [];
-    document.getElementById('tracker-count').textContent = items.length + ' раздач';
-    if (!items.length) { box.innerHTML = '<p>Каталог пуст — нажми «Обновить каталог».</p>'; return; }
-    box.innerHTML = items.map(r => `
-      <div class="result">
-        <div class="info">
-          <div class="title">${esc(r.title)}</div>
-          <div class="meta">${r.seeders} сидов · ${esc(r.size)}</div>
-        </div>
-        <button onclick="downloadTorrent(${r.t}, this)">Скачать</button>
-      </div>`).join('');
+    trackerCache = d.items || [];
+    applyFilters();
   } catch(e) { box.innerHTML = '<p>Ошибка: ' + esc(e.message) + '</p>'; }
+}
+function applyFilters() {
+  const box = document.getElementById('tracker-results');
+  const minS = +document.getElementById('f-seeders').value || 0;
+  const losslessOnly = document.getElementById('f-lossless').checked;
+  const q = document.getElementById('f-q').value.trim().toLowerCase();
+  const fids = sectionForumIds();
+  const items = trackerCache.filter(r => {
+    if (fids && !fids.includes(r.forum_id)) return false;
+    if (r.seeders < minS) return false;
+    if (losslessOnly && r.lossless !== 1) return false;
+    if (q && !(r.title || '').toLowerCase().includes(q)) return false;
+    return true;
+  });
+  document.getElementById('tracker-count').textContent = items.length + ' раздач';
+  if (!items.length) { box.innerHTML = '<p>Ничего не найдено под фильтры.</p>'; return; }
+  box.innerHTML = items.map(r => `
+    <div class="result">
+      <div class="info">
+        <div class="title">${esc(r.title)}</div>
+        <div class="meta">${r.seeders} сидов · ${esc(r.size)}${r.lossless === 1 ? ' · lossless' : ''}${r.year ? ' · ' + esc(r.year) : ''}</div>
+      </div>
+      <button onclick="downloadTorrent(${r.t}, this)">Скачать</button>
+    </div>`).join('');
 }
 async function refreshTracker() {
   const box = document.getElementById('tracker-results');
-  box.innerHTML = '<p>Обновляю каталог джаза… (~40 сек)</p>';
+  box.innerHTML = '<p>Обновляю каталог… (первые страницы, ~1-2 мин)</p>';
   try {
-    await api('/api/catalog/refresh', {method:'POST', body: JSON.stringify({pages:1})});
+    const fids = sectionForumIds();
+    const body = fids ? {forums: fids, pages: 1} : {pages: 1};
+    await api('/api/catalog/refresh', {method:'POST', body: JSON.stringify(body)});
     await loadTracker();
   } catch(e) { box.innerHTML = '<p>Ошибка: ' + esc(e.message) + '</p>'; }
 }

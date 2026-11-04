@@ -124,6 +124,9 @@ def _schema(c):
     c.execute("""CREATE TABLE IF NOT EXISTS catalog(
         t INTEGER PRIMARY KEY, forum_id INTEGER, title TEXT, size TEXT,
         seeders INTEGER, leechers INTEGER, crawled_at INTEGER)""")
+    for col in ("lossless INTEGER", "year TEXT"):
+        with contextlib.suppress(sqlite3.OperationalError):
+            c.execute(f"ALTER TABLE catalog ADD COLUMN {col}")
     c.commit()
 
 
@@ -224,8 +227,27 @@ RUTRACKER_BASE = "https://rutracker.org/forum"
 # cf_clearance привязан к UA FlareSolverr — прямой запрос dl.php обязан слать ТОТ ЖЕ UA
 RUTRACKER_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
-# жанровые подфорумы lossless (раздел f=2267 «Зарубежный джаз»)
-JAZZ_FORUMS = [2277, 2278, 2279, 2280, 2281, 2282, 2353, 2284, 2285, 2283, 2286]
+# жанровые разделы → подфорумы RuTracker (lossless + lossy)
+FORUM_CATALOG = {
+    "jazz": {"title": "Джаз (зарубежный)", "forums": [
+        (2277, "Early Jazz, Swing"), (2278, "Bop"), (2279, "Mainstream, Cool"),
+        (2280, "Jazz Fusion"), (2281, "World Fusion, Ethnic"), (2282, "Avant-Garde"),
+        (2353, "Modern Creative"), (2284, "Smooth, Jazz-Pop"), (2285, "Vocal Jazz"),
+        (2283, "Funk, Soul, R&B"), (2286, "Сборники"), (2287, "lossy")]},
+    "blues": {"title": "Блюз (зарубежный)", "forums": [
+        (2292, "Blues-rock"), (2290, "Roots, Pre-War"), (2289, "Сборники"), (2288, "lossy")]},
+    "classical": {"title": "Классика", "forums": [
+        (794, "Опера"), (556, "Вокальная"), (2307, "Хоровая"), (557, "Оркестровая"),
+        (2308, "Концерт с оркестром"), (558, "Камерная"), (793, "Сольная инструментальная"),
+        (560, "Собрания сочинений"), (969, "Classical Crossover")]},
+    "rock": {"title": "Rock (зарубежный)", "forums": [
+        (1702, "Classic/Hard"), (1704, "Progressive/Art"), (1706, "Folk-Rock"),
+        (2329, "AOR"), (1708, "Pop/Soft"), (1710, "Instrumental Guitar"),
+        (1712, "Rockabilly"), (731, "Сборники"), (1714, "Восточноазиатский")]},
+    "ru_jazz": {"title": "Джаз и блюз (отечественный)", "forums": [
+        (2297, "Джаз lossless"), (2296, "Блюз lossless")]},
+}
+JAZZ_FORUMS = [f for f, _ in FORUM_CATALOG["jazz"]["forums"]]
 
 
 class CatalogRefreshReq(BaseModel):
@@ -245,6 +267,15 @@ def _flaresolverr_get(url: str) -> str:
     return r.json().get("solution", {}).get("response", "") or ""
 
 
+def _guess_lossless(title: str) -> int | None:
+    t = (title or "").lower()
+    if any(k in t for k in ("lossless", "flac", "dsd", "sacd", "ape", "wavpack", "24/", "24-96")):
+        return 1
+    if any(k in t for k in ("mp3", "lossy", "ogg", "aac", "m4a", "320")):
+        return 0
+    return None
+
+
 def _parse_forum_page(page: str) -> list[dict]:
     rows = []
     for tr in re.split(r"<tr", page)[1:]:
@@ -262,12 +293,16 @@ def _parse_forum_page(page: str) -> list[dict]:
         s = re.search(r'class="seedmed"[^>]*><b>(\d+)</b>', tr)
         l = re.search(r'class="leechmed"[^>]*><b>(\d+)</b>', tr)
         sz = re.search(r'class="[^"]*dl-stub[^"]*">([^<]+)</a>', tr)
+        title = re.sub(r"\s+", " ", html.unescape(title_raw)).strip()
+        ym = re.search(r"\b(19|20)\d{2}\b", title)
         rows.append({
             "t": tid,
-            "title": re.sub(r"\s+", " ", html.unescape(title_raw)).strip(),
+            "title": title,
             "seeders": int(s.group(1)) if s else 0,
             "leechers": int(l.group(1)) if l else 0,
             "size": (sz.group(1) or "").replace("&nbsp;", " ").strip() if sz else "",
+            "lossless": _guess_lossless(title),
+            "year": ym.group(0) if ym else None,
         })
     return rows
 
@@ -286,15 +321,34 @@ def crawl_forum(forum_id: int, pages: int = 3) -> list[dict]:
 
 
 @app.get("/api/catalog")
-def catalog(forum_id: int | None = None):
+def catalog(forum_id: int | None = None, min_seeders: int = 0, lossless: bool | None = None,
+            q: str | None = None):
+    sql = "SELECT * FROM catalog WHERE 1=1"
+    params: list = []
+    if forum_id:
+        sql += " AND forum_id=?"
+        params.append(forum_id)
+    if min_seeders > 0:
+        sql += " AND seeders>=?"
+        params.append(min_seeders)
+    if lossless is not None:
+        sql += " AND lossless=?"
+        params.append(1 if lossless else 0)
+    if q:
+        sql += " AND title LIKE ?"
+        params.append(f"%{q}%")
+    sql += " ORDER BY seeders DESC, t DESC"
     with db() as c:
-        if forum_id:
-            rows = c.execute(
-                "SELECT * FROM catalog WHERE forum_id=? ORDER BY seeders DESC, t DESC",
-                (forum_id,)).fetchall()
-        else:
-            rows = c.execute("SELECT * FROM catalog ORDER BY seeders DESC, t DESC").fetchall()
+        rows = c.execute(sql, params).fetchall()
         return {"items": [dict(r) for r in rows], "count": len(rows)}
+
+
+@app.get("/api/catalog/sections")
+def catalog_sections():
+    return {"sections": [
+        {"id": k, "title": v["title"],
+         "forums": [{"id": f, "title": t} for f, t in v["forums"]]}
+        for k, v in FORUM_CATALOG.items()]}
 
 
 @app.post("/api/catalog/refresh")
@@ -307,13 +361,15 @@ def catalog_refresh(req: CatalogRefreshReq):
     now = int(time.time())
     with db() as c:
         c.executemany(
-            """INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at)
-               VALUES(:t,:forum_id,:title,:size,:seeders,:leechers,:crawled_at)
+            """INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,lossless,year)
+               VALUES(:t,:forum_id,:title,:size,:seeders,:leechers,:crawled_at,:lossless,:year)
                ON CONFLICT(t) DO UPDATE SET seeders=excluded.seeders,
-                   leechers=excluded.leechers, crawled_at=excluded.crawled_at""",
+                   leechers=excluded.leechers, lossless=excluded.lossless,
+                   year=excluded.year, crawled_at=excluded.crawled_at""",
             [{"t": r["t"], "forum_id": r["forum_id"], "title": r["title"],
               "size": r["size"], "seeders": r["seeders"], "leechers": r["leechers"],
-              "crawled_at": now} for r in crawled],
+              "crawled_at": now, "lossless": r.get("lossless"), "year": r.get("year")}
+             for r in crawled],
         )
         c.commit()
     return {"ok": True, "count": len(crawled)}
