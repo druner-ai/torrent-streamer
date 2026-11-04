@@ -550,7 +550,7 @@ def catalog_reimport():
         if not (t.get("hash") and t.get("name")) or t["hash"] in existing:
             continue
         try:
-            aid, audio = _register_album(t["hash"], t["name"], qb.files(t["hash"]))
+            _aid, audio = _register_album(t["hash"], t["name"], qb.files(t["hash"]))
             qb.set_priority(t["hash"], {f["name"] for f in audio})
             n += 1
         except HTTPException:
