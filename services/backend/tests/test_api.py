@@ -657,14 +657,16 @@ def test_parse_forum_page_last_post():
 def test_catalog_multi_forum_filter(tmp_path):
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
         with main.db() as c:
-            for t, fid in ((100, 2277), (101, 2278), (102, 9999)):
-                c.execute("INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at)"
-                          " VALUES(?,?,?,?,?,?,?)", (t, fid, f"title{t}", "1GB", 1, 0, 0))
+            for t, fid, album in ((100, 2277, "A"), (101, 2278, "B"), (102, 9999, "C")):
+                c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
+                              lossless,artist,album,release_key)
+                             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                          (t, fid, f"{album} - X (2020)", "1GB", 1, 0, 0, 1, "X", album, album.lower()))
             c.commit()
-        r = client.get("/api/catalog?forum_id=2277&forum_id=2278")
+        r = client.get("/api/catalog/groups?forum_id=2277&forum_id=2278")
         assert r.status_code == 200
-        ids = {x["t"] for x in r.json()["items"]}
-        assert ids == {100, 101}
+        albums = {g["album"] for g in r.json()["groups"]}
+        assert albums == {"A", "B"}
 
 
 def test_catalog_groups_sort_new(tmp_path):

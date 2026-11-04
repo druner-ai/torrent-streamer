@@ -8,6 +8,7 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [passwordSet, setPasswordSet] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -42,6 +43,19 @@ export default function SettingsModal({ open, onClose, notify }) {
       notify(e.message, 'error')
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function testLogin() {
+    setTesting(true)
+    try {
+      const r = await api.settingsTest()
+      if (r.ok) notify('Логин RuTracker работает', 'success')
+      else notify(r.error || 'Логин не прошёл', 'error')
+    } catch (e) {
+      notify(e.message, 'error')
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -94,6 +108,15 @@ export default function SettingsModal({ open, onClose, notify }) {
                 autoComplete="new-password"
                 className="h-9 w-full rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
               />
+              <button
+                type="button"
+                onClick={testLogin}
+                disabled={testing}
+                className="mt-3 flex items-center gap-2 rounded-sm bg-surface-1 px-3 py-1.5 text-[12px] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-60"
+              >
+                {testing && <Loader2 size={13} className="animate-spin" />}
+                Проверить логин
+              </button>
             </div>
           </div>
         )}

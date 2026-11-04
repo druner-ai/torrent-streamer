@@ -538,29 +538,6 @@ def crawl_forum(forum_id: int, pages: int = 3) -> list[dict]:
     return rows
 
 
-@app.get("/api/catalog")
-def catalog(forum_id: Annotated[list[int] | None, Query()] = None, min_seeders: int = 0,
-            lossless: bool | None = None, q: str | None = None):
-    sql = "SELECT * FROM catalog WHERE 1=1"
-    params: list = []
-    if forum_id:
-        sql += f" AND forum_id IN ({','.join('?' * len(forum_id))})"
-        params += forum_id
-    if min_seeders > 0:
-        sql += " AND seeders>=?"
-        params.append(min_seeders)
-    if lossless is not None:
-        sql += " AND lossless=?"
-        params.append(1 if lossless else 0)
-    if q:
-        sql += " AND title LIKE ?"
-        params.append(f"%{q}%")
-    sql += " ORDER BY seeders DESC, t DESC"
-    with db() as c:
-        rows = c.execute(sql, params).fetchall()
-        return {"items": [dict(r) for r in rows], "count": len(rows)}
-
-
 @app.get("/api/catalog/sections")
 def catalog_sections():
     return {"sections": [
@@ -588,6 +565,20 @@ def settings_save(req: SettingsReq):
     if req.rutracker_password is not None and req.rutracker_password.strip():
         _set_setting("rutracker_password", req.rutracker_password.strip())
     return {"ok": True}
+
+
+@app.post("/api/settings/test")
+def settings_test():
+    """проверяет логин/пароль RuTracker (через FlareSolverr login.php)."""
+    if not (_rutracker_login() and _rutracker_password()):
+        return {"ok": False, "error": "не задан логин/пароль"}
+    try:
+        cookies = _rutracker_cookies()
+    except requests.RequestException as e:
+        return {"ok": False, "error": f"логин не прошёл: {e}"}
+    has_session = any(c.get("name") == "bb_session" for c in cookies)
+    return {"ok": has_session,
+            "error": "" if has_session else "логин не прошёл (нет сессии bb_session)"}
 
 
 @app.get("/api/catalog/groups")
@@ -634,21 +625,31 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
             "size": r["size"], "year": r["year"], "last_post": r["last_post"] or 0})
     if sort == "new":
         out = sorted(groups.values(), key=lambda g: -(g["last_post"] or 0))
+    elif sort == "year":
+        out = sorted(groups.values(),
+                     key=lambda g: (g["year"] or "9999",
+                                    -max(e["seeders"] for e in g["editions"])))
+    elif sort == "name":
+        out = sorted(groups.values(), key=lambda g: (g["artist"] or g["album"] or "").lower())
     else:
         out = sorted(groups.values(), key=lambda g: -max(e["seeders"] for e in g["editions"]))
+    with db() as c:
+        lib = {r["release_key"] for r in c.execute(
+            "SELECT DISTINCT release_key FROM albums WHERE release_key IS NOT NULL").fetchall()}
     for g in out:
         g["editions"].sort(key=lambda e: -e["seeders"])
         g["count"] = len(g["editions"])
+        g["in_library"] = g["release_key"] in lib
     return {"groups": out, "count": len(out)}
 
 
-@app.post("/api/catalog/refresh")
-def catalog_refresh(req: CatalogRefreshReq):
-    crawled: list[dict] = []
-    for fid in req.forums:
-        crawled += crawl_forum(fid, req.pages)
+# ---------- фоновое обновление каталога ----------
+_REFRESH_STATE = {"running": False, "total": 0, "done": 0, "crawled": 0}
+
+
+def _save_crawled(crawled: list[dict]) -> int:
     if not crawled:
-        return {"ok": True, "count": 0}
+        return 0
     now = int(time.time())
     with db() as c:
         for r in crawled:
@@ -671,7 +672,46 @@ def catalog_refresh(req: CatalogRefreshReq):
                  r["last_post"]),
             )
         c.commit()
-    return {"ok": True, "count": len(crawled)}
+    return len(crawled)
+
+
+def _run_catalog_refresh(forums: list[int], pages: int):
+    _REFRESH_STATE.update(running=True, total=len(forums), done=0, crawled=0)
+    try:
+        for fid in forums:
+            crawled = crawl_forum(fid, pages)
+            _save_crawled(crawled)
+            _REFRESH_STATE["crawled"] += len(crawled)
+            _REFRESH_STATE["done"] += 1
+        # обложки для релизов без cover_url (ограниченно, чтобы не вешать MusicBrainz)
+        _enrich_covers(50)
+    finally:
+        _REFRESH_STATE["running"] = False
+
+
+@app.post("/api/catalog/refresh")
+def catalog_refresh(req: CatalogRefreshReq):
+    if _REFRESH_STATE["running"]:
+        return {"ok": False, "error": "обновление каталога уже идёт"}
+    threading.Thread(target=_run_catalog_refresh,
+                     args=(req.forums, req.pages), daemon=True).start()
+    return {"ok": True, "started": True, "total": len(req.forums)}
+
+
+@app.get("/api/catalog/refresh/status")
+def catalog_refresh_status():
+    return _REFRESH_STATE
+
+
+@app.post("/api/catalog/purge")
+def catalog_purge(days: int = 365):
+    """удаляет мёртвые раздачи: 0 сидов и последний пост старше N дней."""
+    cutoff = int(time.time()) - days * 86400
+    with db() as c:
+        cur = c.execute("DELETE FROM catalog WHERE seeders=0 AND last_post>0 AND last_post<?",
+                        (cutoff,))
+        c.commit()
+        return {"ok": True, "removed": cur.rowcount}
 
 
 @app.post("/api/catalog/covers")
@@ -953,7 +993,7 @@ def catalog_tree_refresh():
 @app.get("/api/catalog/tree")
 def catalog_tree():
     with db() as c:
-        rows = c.execute("SELECT * FROM forums ORDER BY category, parent_id, forum_id").fetchall()
+        rows = c.execute("SELECT * FROM forums ORDER BY rowid").fetchall()
     cats: dict[str, list] = {}
     groups: dict[int, dict] = {}
     for r in rows:
@@ -976,7 +1016,15 @@ def catalog_tree_save(req: TreeSaveReq):
         for fid in ids:
             c.execute("UPDATE forums SET enabled=1 WHERE forum_id=?", (fid,))
         c.commit()
-    return {"ok": True, "enabled": len(ids)}
+        crawled = {r["forum_id"] for r in c.execute("SELECT DISTINCT forum_id FROM catalog").fetchall()}
+    # авто-краулинг новых включённых разделов (которых ещё нет в каталоге)
+    new_forums = [fid for fid in ids if fid not in crawled]
+    queued = 0
+    if new_forums and not _REFRESH_STATE["running"]:
+        threading.Thread(target=_run_catalog_refresh,
+                         args=(new_forums, 1), daemon=True).start()
+        queued = len(new_forums)
+    return {"ok": True, "enabled": len(ids), "queued": queued}
 
 
 def _torrent_state(state: str) -> str:

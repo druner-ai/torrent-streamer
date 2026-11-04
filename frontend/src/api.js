@@ -34,16 +34,6 @@ export const api = {
   toggleFavorite: (id) => post(`/api/albums/${id}/favorite`),
   deleteAlbum: (id) => request(`/api/albums/${id}`, { method: 'DELETE' }),
 
-  catalog: (params = {}) => {
-    const qs = new URLSearchParams()
-    const fids = params.forum_id ? [].concat(params.forum_id) : []
-    fids.forEach((f) => qs.append('forum_id', f))
-    if (params.min_seeders) qs.set('min_seeders', params.min_seeders)
-    if (params.lossless != null) qs.set('lossless', params.lossless ? 'true' : 'false')
-    if (params.q) qs.set('q', params.q)
-    const suffix = qs.toString() ? `?${qs.toString()}` : ''
-    return request(`/api/catalog${suffix}`)
-  },
   catalogSections: () => request('/api/catalog/sections'),
   catalogGroups: (params = {}) => {
     const qs = new URLSearchParams()
@@ -62,9 +52,13 @@ export const api = {
   catalogTree: () => request('/api/catalog/tree'),
   saveCatalogTree: (enabled) => post('/api/catalog/tree', { enabled }),
   refreshCatalogTree: () => post('/api/catalog/tree/refresh'),
+  catalogRefresh: (forums, pages = 1) => post('/api/catalog/refresh', { forums, pages }),
+  catalogRefreshStatus: () => request('/api/catalog/refresh/status'),
+  catalogPurge: (days = 365) => post(`/api/catalog/purge?days=${days}`),
 
   settings: () => request('/api/settings'),
   saveSettings: (data) => post('/api/settings', data),
+  settingsTest: () => post('/api/settings/test'),
 
   queue: () => request('/api/queue'),
   addToQueue: (albumId, trackIndex, mode) =>

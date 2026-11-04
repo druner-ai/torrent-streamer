@@ -1,4 +1,4 @@
-import { Download, Loader2, RefreshCw, Rss, Search, Settings2, X } from 'lucide-react'
+import { ChevronRight, Download, Loader2, RefreshCw, Rss, Search, Settings2, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api.js'
 import { formatSize, seedersTone } from '../utils.js'
@@ -33,7 +33,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
   const [catIdx, setCatIdx] = useState(null)
   const [groupIdx, setGroupIdx] = useState(null)
   const [subId, setSubId] = useState(null)
-  const [sortNew, setSortNew] = useState(false)
+  const [sortMode, setSortMode] = useState('seeders')
   const [minSeeders, setMinSeeders] = useState(0)
   const [losslessOnly, setLosslessOnly] = useState(false)
   const [qInput, setQInput] = useState('')
@@ -48,6 +48,9 @@ export default function Tracker({ notify, onAlbumAdded }) {
   const [draftEnabled, setDraftEnabled] = useState(null)
   const [treeSaving, setTreeSaving] = useState(false)
   const [treeRefreshing, setTreeRefreshing] = useState(false)
+  const [reloadTick, setReloadTick] = useState(0)
+  const [sectionQuery, setSectionQuery] = useState('')
+  const [collapsedCats, setCollapsedCats] = useState({})
 
   const loadTree = async () => {
     try {
@@ -84,9 +87,15 @@ export default function Tracker({ notify, onAlbumAdded }) {
 
   const allEnabledLeaves = () => tree.flatMap(leafForums)
 
+  const visibleTree = useMemo(
+    () => tree.filter((c) => leafForums(c).length > 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tree],
+  )
+
   const forumIds = useMemo(() => {
     if (subId) return [subId]
-    const cat = catIdx != null ? tree[catIdx] : null
+    const cat = catIdx != null ? visibleTree[catIdx] : null
     if (groupIdx != null && cat) {
       const g = cat.forums[groupIdx]
       if (!g) return []
@@ -94,8 +103,9 @@ export default function Tracker({ notify, onAlbumAdded }) {
       return [g.id]
     }
     if (cat) return leafForums(cat)
-    return sortNew ? allEnabledLeaves() : []
-  }, [subId, catIdx, groupIdx, tree, sortNew])
+    return sortMode === 'new' ? allEnabledLeaves() : []
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subId, catIdx, groupIdx, visibleTree, sortMode])
 
   useEffect(() => {
     let alive = true
@@ -107,7 +117,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
         min_seeders: minSeeders || undefined,
         lossless: losslessOnly ? true : undefined,
         q: q || undefined,
-        sort: sortNew ? 'new' : undefined,
+        sort: sortMode !== 'seeders' ? sortMode : undefined,
       })
       .then((data) => {
         if (!alive) return
@@ -123,11 +133,11 @@ export default function Tracker({ notify, onAlbumAdded }) {
     return () => {
       alive = false
     }
-  }, [forumIds, minSeeders, losslessOnly, q, sortNew])
+  }, [forumIds, minSeeders, losslessOnly, q, sortMode, reloadTick])
 
   const activeCategory = useMemo(
-    () => (catIdx != null ? tree[catIdx] : null),
-    [tree, catIdx],
+    () => (catIdx != null ? visibleTree[catIdx] : null),
+    [visibleTree, catIdx],
   )
   const activeGroup = useMemo(
     () => (activeCategory && groupIdx != null ? activeCategory.forums[groupIdx] : null),
@@ -140,6 +150,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
       const res = await api.downloadTorrent(edition.t)
       notify(`Добавлено в библиотеку: ${res.name || edition.title}`, 'success')
       onAlbumAdded()
+      setReloadTick((t) => t + 1)
       setSelected(null)
     } catch (e) {
       notify(e.message, 'error')
@@ -175,8 +186,12 @@ export default function Tracker({ notify, onAlbumAdded }) {
   async function saveSections() {
     setTreeSaving(true)
     try {
-      await api.saveCatalogTree([...(draftEnabled || [])])
-      notify('Разделы сохранены', 'success')
+      const res = await api.saveCatalogTree([...(draftEnabled || [])])
+      if (res.queued > 0) {
+        notify(`Разделы сохранены — ${res.queued} новых подгружаются в фоне`, 'success')
+      } else {
+        notify('Разделы сохранены', 'success')
+      }
       setSectionsOpen(false)
       await loadTree()
     } catch (e) {
@@ -231,18 +246,18 @@ export default function Tracker({ notify, onAlbumAdded }) {
 
       {/* категории + Новое */}
       <div className="no-scrollbar -mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1">
-        <button type="button" onClick={() => { setCatIdx(null); setGroupIdx(null); setSubId(null); setSortNew(false) }} className={chip(catIdx === null && !sortNew)}>
+        <button type="button" onClick={() => { setCatIdx(null); setGroupIdx(null); setSubId(null); setSortMode('seeders') }} className={chip(catIdx === null && sortMode === 'seeders')}>
           Все
         </button>
-        <button type="button" onClick={() => { setCatIdx(null); setGroupIdx(null); setSubId(null); setSortNew(true) }} className={chip(sortNew)}>
+        <button type="button" onClick={() => { setCatIdx(null); setGroupIdx(null); setSubId(null); setSortMode('new') }} className={chip(sortMode === 'new')}>
           Новое
         </button>
-        {tree.map((c, i) => (
+        {visibleTree.map((c, i) => (
           <button
             key={c.category}
             type="button"
-            onClick={() => { setCatIdx(i); setGroupIdx(null); setSubId(null); setSortNew(false) }}
-            className={chip(catIdx === i && !sortNew)}
+            onClick={() => { setCatIdx(i); setGroupIdx(null); setSubId(null); setSortMode('seeders') }}
+            className={chip(catIdx === i && sortMode !== 'new')}
           >
             {c.category}
           </button>
@@ -250,7 +265,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
       </div>
 
       {/* группы категории */}
-      {activeCategory && !sortNew && (
+      {activeCategory && sortMode !== 'new' && (
         <div className="no-scrollbar -mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1">
           {activeCategory.forums.map((g, i) => (
             <button
@@ -266,7 +281,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
       )}
 
       {/* подфорумы группы */}
-      {activeGroup && activeGroup.subforums.length > 0 && !sortNew && (
+      {activeGroup && activeGroup.subforums.length > 0 && sortMode !== 'new' && (
         <div className="no-scrollbar -mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1">
           {activeGroup.subforums.map((s) => (
             <button
@@ -312,6 +327,17 @@ export default function Tracker({ notify, onAlbumAdded }) {
           />
           Только Lossless
         </label>
+
+        <select
+          value={sortMode}
+          onChange={(e) => setSortMode(e.target.value)}
+          className="h-9 rounded-sm border border-transparent bg-surface-inset px-2 text-[12.5px] text-text-primary focus:border-strong focus:outline-none"
+        >
+          <option value="seeders">По сидам</option>
+          <option value="new">По дате</option>
+          <option value="year">По году</option>
+          <option value="name">По исполнителю</option>
+        </select>
 
         <span className="font-mono text-[11px] text-text-muted">{count} релизов</span>
       </div>
@@ -366,6 +392,11 @@ export default function Tracker({ notify, onAlbumAdded }) {
                       {g.count} изд.
                     </span>
                   )}
+                  {g.in_library && (
+                    <span className="absolute right-2 top-2 rounded-xs bg-success/20 px-1.5 py-0.5 text-[10.5px] font-semibold text-success">
+                      ✓
+                    </span>
+                  )}
                 </div>
                 <div className="p-3">
                   <p className="truncate text-[13px] font-medium leading-5 text-text-primary">
@@ -374,7 +405,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
                   <p className="truncate text-[12px] text-text-secondary">{g.artist || '—'}</p>
                   <p className="mt-1 flex items-center justify-between font-mono text-[10.5px] text-text-muted">
                     <span className={toneText[tone]}>{top.seeders || 0} сид.</span>
-                    {sortNew && g.last_post ? (
+                    {sortMode === 'new' && g.last_post ? (
                       <span>{fmtDate(g.last_post)}</span>
                     ) : (
                       g.year && <span>{g.year}</span>
@@ -443,15 +474,21 @@ export default function Tracker({ notify, onAlbumAdded }) {
                     <button
                       type="button"
                       onClick={() => download(e)}
-                      disabled={downloadingT === e.t}
-                      className="flex h-9 shrink-0 items-center gap-2 rounded-sm bg-primary px-3 text-[13px] font-medium text-on-primary transition-colors hover:bg-primary-hover active:bg-primary-pressed disabled:opacity-60"
+                      disabled={downloadingT === e.t || selected.in_library}
+                      className={`flex h-9 shrink-0 items-center gap-2 rounded-sm px-3 text-[13px] font-medium transition-colors ${
+                        selected.in_library
+                          ? 'bg-surface-2 text-success'
+                          : 'bg-primary text-on-primary hover:bg-primary-hover active:bg-primary-pressed disabled:opacity-60'
+                      }`}
                     >
-                      {downloadingT === e.t ? (
+                      {selected.in_library ? (
+                        <>✓ В библиотеке</>
+                      ) : downloadingT === e.t ? (
                         <Loader2 size={15} className="animate-spin" />
                       ) : (
                         <Download size={15} />
                       )}
-                      Скачать
+                      {!selected.in_library && 'Скачать'}
                     </button>
                   </li>
                 )
@@ -492,6 +529,15 @@ export default function Tracker({ notify, onAlbumAdded }) {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              <div className="mb-4 flex h-9 items-center gap-2 rounded-sm border border-transparent bg-surface-inset px-3 focus-within:border-strong">
+                <Search size={15} className="shrink-0 text-text-muted" />
+                <input
+                  value={sectionQuery}
+                  onChange={(e) => setSectionQuery(e.target.value)}
+                  placeholder="Поиск раздела…"
+                  className="w-full bg-transparent text-[12.5px] text-text-primary placeholder:text-text-muted focus:outline-none"
+                />
+              </div>
               {tree.length === 0 ? (
                 <div className="flex flex-col items-center gap-3 py-10">
                   <p className="text-[14px] text-text-secondary">
@@ -499,46 +545,68 @@ export default function Tracker({ notify, onAlbumAdded }) {
                   </p>
                 </div>
               ) : (
-                tree.map((c) => (
-                  <div key={c.category} className="mb-5">
-                    <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-text-muted">
-                      {c.category}
-                    </h3>
-                    {c.forums.map((g) => (
-                      <div key={g.id} className="mb-1">
-                        {g.subforums.length > 0 ? (
-                          <div>
-                            <p className="py-1 text-[13px] font-medium text-text-primary">{g.title}</p>
-                            {g.subforums.map((s) => (
-                              <label
-                                key={s.id}
-                                className="ml-4 flex cursor-pointer items-center gap-2 py-1 text-[13px] text-text-secondary"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draftEnabled ? draftEnabled.has(s.id) : s.enabled}
-                                  onChange={() => toggleDraft(s.id)}
-                                  className="h-4 w-4 rounded-xs border-border-strong bg-surface-inset accent-primary"
-                                />
-                                {s.title}
-                              </label>
-                            ))}
-                          </div>
-                        ) : (
-                          <label className="flex cursor-pointer items-center gap-2 py-1 text-[13px] text-text-secondary">
-                            <input
-                              type="checkbox"
-                              checked={draftEnabled ? draftEnabled.has(g.id) : g.enabled}
-                              onChange={() => toggleDraft(g.id)}
-                              className="h-4 w-4 rounded-xs border-border-strong bg-surface-inset accent-primary"
-                            />
-                            {g.title}
-                          </label>
-                        )}
+                tree
+                  .filter((c) => {
+                    if (!sectionQuery.trim()) return true
+                    const q = sectionQuery.toLowerCase()
+                    return (
+                      c.category.toLowerCase().includes(q) ||
+                      c.forums.some(
+                        (f) =>
+                          f.title.toLowerCase().includes(q) ||
+                          f.subforums.some((s) => s.title.toLowerCase().includes(q)),
+                      )
+                    )
+                  })
+                  .map((c) => {
+                    const collapsed = collapsedCats[c.category]
+                    return (
+                      <div key={c.category} className="mb-3">
+                        <button
+                          type="button"
+                          onClick={() => setCollapsedCats((p) => ({ ...p, [c.category]: !p[c.category] }))}
+                          className="mb-1 flex w-full items-center gap-1.5 text-left text-[13px] font-semibold uppercase tracking-wide text-text-muted transition-colors hover:text-text-primary"
+                        >
+                          <ChevronRight size={14} className={`shrink-0 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+                          {c.category}
+                        </button>
+                        {!collapsed &&
+                          c.forums.map((g) => (
+                            <div key={g.id} className="mb-1">
+                              {g.subforums.length > 0 ? (
+                                <div>
+                                  <p className="py-1 text-[13px] font-medium text-text-primary">{g.title}</p>
+                                  {g.subforums.map((s) => (
+                                    <label
+                                      key={s.id}
+                                      className="ml-4 flex cursor-pointer items-center gap-2 py-1 text-[13px] text-text-secondary"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={draftEnabled ? draftEnabled.has(s.id) : s.enabled}
+                                        onChange={() => toggleDraft(s.id)}
+                                        className="h-4 w-4 rounded-xs border-border-strong bg-surface-inset accent-primary"
+                                      />
+                                      {s.title}
+                                    </label>
+                                  ))}
+                                </div>
+                              ) : (
+                                <label className="flex cursor-pointer items-center gap-2 py-1 text-[13px] text-text-secondary">
+                                  <input
+                                    type="checkbox"
+                                    checked={draftEnabled ? draftEnabled.has(g.id) : g.enabled}
+                                    onChange={() => toggleDraft(g.id)}
+                                    className="h-4 w-4 rounded-xs border-border-strong bg-surface-inset accent-primary"
+                                  />
+                                  {g.title}
+                                </label>
+                              )}
+                            </div>
+                          ))}
                       </div>
-                    ))}
-                  </div>
-                ))
+                    )
+                  })
               )}
             </div>
 
