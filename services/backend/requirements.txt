@@ -3,3 +3,4 @@ uvicorn[standard]
 requests
 python-mpd2
 mutagen
+zeroconf

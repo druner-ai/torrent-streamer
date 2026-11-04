@@ -38,7 +38,10 @@ TS_CONTROLLER_SOCK = os.getenv("TS_CONTROLLER_SOCK", "/tmp/ts-controller.sock")
 TS_CONTROLLER_BIN = os.getenv("TS_CONTROLLER_BIN", "ts-controller")
 
 
-# ---------- мульти-эндпоинт: имя=host:port через запятую ----------
+# ---------- мульти-эндпоинт: имя=кандидаты через запятую, кандидаты через | ----------
+# Кандидат: "host:port" (прямой адрес) или "mdns:SUBSTR" (поиск _oaat._tcp по подстроке имени).
+# Порядок кандидатов = приоритет: mDNS (LAN, дома) важнее прямого Tailscale-адреса (дорога).
+# Пример: OAAT_ENDPOINTS=MacBook=mdns:MacBook|100.75.171.5:9740,NUC=127.0.0.1:9740
 def _parse_endpoints(raw: str) -> dict:
     eps = {}
     for part in raw.split(","):
@@ -47,23 +50,101 @@ def _parse_endpoints(raw: str) -> dict:
             name, addr = part.split("=", 1)
             name, addr = name.strip(), addr.strip()
             if name and addr:
-                eps[name] = addr
+                eps[name] = [c.strip() for c in addr.split("|") if c.strip()]
     return eps
+
+
+def _mdns_lookup(substr: str, timeout: float = 3.0) -> str | None:
+    """Поиск OAAT-endpoint по mDNS (_oaat._tcp), чьё имя содержит substr → 'ip:port'.
+
+    Endpoint (tune-bridge) сам регистрируется в mDNS: name=«MacBook DAC» port=9740
+    service_type=_oaat._tcp. Работает только в LAN (multicast) — вне LAN вернёт None,
+    и вызывающий уйдёт на прямой Tailscale-адрес.
+    """
+    try:
+        from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
+    except ImportError:
+        return None
+    try:
+        zc = Zeroconf()
+    except Exception:  # noqa: BLE001 — Zeroconf кидает разные ошибки (OSError/RuntimeError) на разных системах
+        return None
+    found: list[str] = []
+
+    class _Listener(ServiceListener):
+        def add_service(self, _zc, type_, name):
+            if substr.lower() not in name.lower():
+                return
+            info = _zc.get_service_info(type_, name)
+            if info and info.addresses:
+                raw = info.addresses[0]
+                ip = socket.inet_ntoa(raw) if len(raw) == 4 else socket.inet_ntop(socket.AF_INET6, raw)
+                found.append(f"{ip}:{info.port}")
+
+        def remove_service(self, _zc, type_, name):
+            return None
+
+        def update_service(self, _zc, type_, name):
+            return None
+
+    browser = ServiceBrowser(zc, "_oaat._tcp.local.", _Listener())
+    deadline = time.time() + timeout
+    while time.time() < deadline and not found:
+        time.sleep(0.1)
+    browser.cancel()
+    zc.close()
+    return found[0] if found else None
 
 
 OAAT_ENDPOINTS = _parse_endpoints(os.getenv("OAAT_ENDPOINTS", ""))
 if not OAAT_ENDPOINTS:
-    OAAT_ENDPOINTS = {"MacBook": OAAT_TARGET}
+    OAAT_ENDPOINTS = {"MacBook": [OAAT_TARGET]}
 ACTIVE_EP_FILE = os.getenv("ACTIVE_EP_FILE", "/data/active_endpoint")
 OAAT_CONTROL_TOKEN = os.getenv("OAAT_CONTROL_TOKEN", "")
 # Виртуальные/ненужные аудиоустройства, которые прячем из списка (подстроки через запятую).
 OAAT_IGNORE_DEVICES = [m.strip().lower() for m in os.getenv(
     "OAAT_IGNORE_DEVICES", "microsoft teams audio").split(",") if m.strip()]
 
+# Кэш резолва адресов: name -> (expires_monotonic, "host:port"). mDNS-результат живёт
+# TTL секунд, потом пересматривается (это и есть авто-обнаружение при переезде).
+_EP_ADDR_CACHE: dict[str, tuple[float, str]] = {}
+_EP_ADDR_TTL = 30.0
+
+
+def _resolve_ep(name: str) -> str | None:
+    """Пробегает кандидатов по порядку: первый живой mDNS; иначе первый прямой адрес."""
+    cands = OAAT_ENDPOINTS.get(name, [])
+    if not cands:
+        return None
+    direct = None
+    for cand in cands:
+        if cand.startswith("mdns:"):
+            resolved = _mdns_lookup(cand[5:])
+            if resolved:
+                return resolved
+        else:
+            if direct is None:
+                direct = cand
+    return direct
+
+
+def _ep_addr(name: str) -> str | None:
+    """Актуальный 'host:port' для endpoint (с TTL-кэшем)."""
+    if name not in OAAT_ENDPOINTS:
+        return None
+    now = time.monotonic()
+    hit = _EP_ADDR_CACHE.get(name)
+    if hit and hit[0] > now:
+        return hit[1]
+    addr = _resolve_ep(name)
+    if addr:
+        _EP_ADDR_CACHE[name] = (now + _EP_ADDR_TTL, addr)
+    return addr
+
 
 def _ep_web(name: str) -> str:
     """Web UI OAAT-эндпоинта (control 9740 + 1) — список/смена аудио-устройства."""
-    return "http://" + OAAT_ENDPOINTS[name].rsplit(":", 1)[0] + ":9741"
+    return "http://" + (_ep_addr(name) or "").rsplit(":", 1)[0] + ":9741"
 
 
 def _ep_headers() -> dict:
@@ -106,6 +187,8 @@ def _stop_ts() -> None:
 def _start_ts(target: str) -> None:
     global _TS_PROC
     _stop_ts()
+    if not target:
+        return
     try:
         _TS_PROC = subprocess.Popen(
             [TS_CONTROLLER_BIN, "--target", target, "--socket", TS_CONTROLLER_SOCK],
@@ -115,6 +198,31 @@ def _start_ts(target: str) -> None:
         # нет бинаря/права — деградируем: приложение живёт, аудио недоступно.
         _TS_PROC = None
         print(f"[ts-controller] не удалось запустить ({e}); аудио недоступно", flush=True)
+
+
+def _ep_watchdog() -> None:
+    """Фоновый пересмотр адреса активного endpoint'а (mDNS появился/пропал = переезд).
+
+    Переключает ts-controller на новый адрес, только если два цикла подряд видит
+    один и тот же НОВЫЙ адрес (дебаунс против «мигания» mDNS на нестабильной сети).
+    """
+    last = _ep_addr(_active_ep_name())
+    pending = None
+    while True:
+        time.sleep(30)
+        with contextlib.suppress(Exception):
+            name = _active_ep_name()
+            addr = _resolve_ep(name)  # форс-резолв, минуя TTL-кэш
+            if not addr or addr == last:
+                pending = None
+                continue
+            if addr == pending:
+                _EP_ADDR_CACHE[name] = (time.monotonic() + _EP_ADDR_TTL, addr)
+                _start_ts(addr)
+                last = addr
+                pending = None
+            else:
+                pending = addr
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
 DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 API_KEY = os.getenv("API_KEY", "")
@@ -129,8 +237,11 @@ MUSICBRAINZ_UA = "torrent-streamer/0.1 (druner@gmail.com)"
 
 @contextlib.asynccontextmanager
 async def lifespan(_app):
-    # ts-controller стартует с активным endpoint'ом (persist в /data/active_endpoint).
-    _start_ts(OAAT_ENDPOINTS[_active_ep_name()])
+    # ts-controller стартует с активным endpoint'ом (persist в /data/active_endpoint);
+    # адрес резолвится через mDNS (LAN) с fallback на прямой (Tailscale).
+    _start_ts(_ep_addr(_active_ep_name()) or "")
+    _watchdog = threading.Thread(target=_ep_watchdog, daemon=True)
+    _watchdog.start()
     yield
     _stop_ts()
 
@@ -1583,8 +1694,8 @@ def endpoints():
     """Все endpoint'ы + их аудио-устройства + активный."""
     active = _active_ep_name()
     eps = []
-    for name, addr in OAAT_ENDPOINTS.items():
-        ep = {"name": name, "control": addr, "active": name == active}
+    for name in OAAT_ENDPOINTS:
+        ep = {"name": name, "control": _ep_addr(name), "active": name == active}
         ep.update(_ep_status(name))
         eps.append(ep)
     return {"active": active, "endpoints": eps}
@@ -1597,7 +1708,7 @@ def endpoints_select(req: EndpointSelectReq):
         raise HTTPException(400, f"неизвестный endpoint: {req.endpoint}")
     if req.endpoint:
         _set_active_ep(req.endpoint)
-        _start_ts(OAAT_ENDPOINTS[req.endpoint])
+        _start_ts(_ep_addr(req.endpoint) or "")
     if req.device:
         # Пауза перед сменой устройства: позиция трека сохраняется в ts-controller,
         # а не обнуляется (после переключения — resume с того же места).

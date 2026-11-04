@@ -40,7 +40,7 @@ services:
       - MPD_PORT=6600
       - DB_PATH=/data/catalog.db
       - OAAT_TARGET=${OAAT_TARGET:-192.168.31.215:9740}
-      - OAAT_ENDPOINTS=${OAAT_ENDPOINTS:-MacBook=100.75.171.5:9740,NUC=127.0.0.1:9740}
+      - OAAT_ENDPOINTS=${OAAT_ENDPOINTS:-MacBook=mdns:MacBook|100.75.171.5:9740,NUC=127.0.0.1:9740}
       - OAAT_CONTROL_TOKEN=${OAAT_CONTROL_TOKEN:-}
       - TS_CONTROLLER_SOCK=/tmp/ts-controller.sock
       - PROWLARR_URL=${PROWLARR_URL:-http://127.0.0.1:9696}

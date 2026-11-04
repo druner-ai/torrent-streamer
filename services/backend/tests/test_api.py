@@ -11,9 +11,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from unittest.mock import Mock, patch
 
-import main
 import requests
 from fastapi.testclient import TestClient
+
+import main
 
 client = TestClient(main.app)
 
@@ -720,3 +721,38 @@ def test_catalog_tree_save_get(tmp_path):
         jazz = cats[0]["forums"][0]
         assert jazz["enabled"] is False          # группа-контейнер
         assert jazz["subforums"][0]["enabled"] is True  # выбран подфорум
+
+
+# --- mDNS-обнаружение endpoint (multi-candidate) ---
+
+def test_parse_endpoints_multiple_candidates():
+    eps = main._parse_endpoints(
+        "MacBook=mdns:MacBook|100.75.171.5:9740,NUC=127.0.0.1:9740")
+    assert eps["MacBook"] == ["mdns:MacBook", "100.75.171.5:9740"]
+    assert eps["NUC"] == ["127.0.0.1:9740"]
+
+
+def test_resolve_ep_falls_back_to_direct_when_mdns_empty():
+    with patch.object(main, "OAAT_ENDPOINTS",
+                      {"MacBook": ["mdns:MacBook", "100.75.171.5:9740"]}), \
+            patch.object(main, "_mdns_lookup", return_value=None):
+        assert main._resolve_ep("MacBook") == "100.75.171.5:9740"
+
+
+def test_resolve_ep_prefers_mdns_over_direct():
+    with patch.object(main, "OAAT_ENDPOINTS",
+                      {"MacBook": ["mdns:MacBook", "100.75.171.5:9740"]}), \
+            patch.object(main, "_mdns_lookup", return_value="192.168.31.215:9740"):
+        assert main._resolve_ep("MacBook") == "192.168.31.215:9740"
+
+
+def test_ep_addr_caches_mdns_result():
+    with patch.object(main, "OAAT_ENDPOINTS",
+                      {"MacBook": ["mdns:MacBook", "100.75.171.5:9740"]}), \
+            patch.object(main, "_mdns_lookup",
+                         return_value="192.168.31.215:9740") as mdns:
+        main._EP_ADDR_CACHE.clear()
+        a = main._ep_addr("MacBook")
+        b = main._ep_addr("MacBook")  # второй вызов из TTL-кэша, mDNS не зовётся
+        assert a == b == "192.168.31.215:9740"
+        assert mdns.call_count == 1
