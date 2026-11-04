@@ -1,4 +1,4 @@
-import { ChevronRight, Download, Loader2, RefreshCw, Rss, Search, Settings2, X } from 'lucide-react'
+import { ChevronRight, Download, LayoutGrid, Loader2, RefreshCw, Rss, Search, Settings2, Sparkles, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api.js'
 import { formatSize, seedersTone } from '../utils.js'
@@ -215,7 +215,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
   }
 
   const chip = (active) =>
-    `shrink-0 rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
+    `flex shrink-0 items-center gap-1.5 rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
       active
         ? 'bg-primary-tint text-primary'
         : 'bg-surface-1 text-text-secondary hover:bg-surface-2'
@@ -247,11 +247,14 @@ export default function Tracker({ notify, onAlbumAdded }) {
       {/* категории + Новое */}
       <div className="no-scrollbar -mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1">
         <button type="button" onClick={() => { setCatIdx(null); setGroupIdx(null); setSubId(null); setSortMode('seeders') }} className={chip(catIdx === null && sortMode === 'seeders')}>
+          <LayoutGrid size={14} />
           Все
         </button>
         <button type="button" onClick={() => { setCatIdx(null); setGroupIdx(null); setSubId(null); setSortMode('new') }} className={chip(sortMode === 'new')}>
+          <Sparkles size={14} />
           Новое
         </button>
+        <span className="h-5 w-px shrink-0 bg-border-subtle" />
         {visibleTree.map((c, i) => (
           <button
             key={c.category}

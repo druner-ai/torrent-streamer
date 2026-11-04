@@ -70,7 +70,7 @@ export const api = {
 
   player: () => request('/api/player'),
   playerCmd: (cmd) => post(`/api/player/${cmd}`),
-  playerSeek: (sec) => post('/api/player/seek', { sec }),
-  playerVolume: (vol) => post('/api/player/volume', { vol }),
-  playerSleep: (minutes) => post('/api/player/sleep', { minutes }),
+  playerSeek: (sec) => post(`/api/player/seek?position=${sec}`),
+  playerVolume: (vol) => post(`/api/player/volume?level=${vol}`),
+  playerSleep: (minutes) => post(`/api/player/sleep?minutes=${minutes}`),
 }
