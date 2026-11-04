@@ -9,7 +9,9 @@
 
 services:
   backend:
-    build: ./services/backend
+    build:
+      context: .
+      dockerfile: services/backend/Dockerfile
     container_name: torrent-streamer-backend
     restart: unless-stopped
     network_mode: host

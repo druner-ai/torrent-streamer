@@ -1222,6 +1222,8 @@ def queue_get():
     return {"queue": out, "pos": _QUEUE_POS}
 
 
-# фронт (путь относительно файла — работает и в Docker, и локально)
-STATIC_DIR = Path(__file__).parent / "static"
+# фронт: в Docker (multi-stage) собранный React-билд в dist/, локально/в тестах — старый static/
+STATIC_DIR = Path(__file__).parent / "dist"
+if not STATIC_DIR.exists():
+    STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
