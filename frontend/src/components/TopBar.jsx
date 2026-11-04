@@ -1,6 +1,6 @@
-import { ChevronLeft, ChevronRight, Plus, Search } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Search, Settings } from 'lucide-react'
 
-export default function TopBar({ onSearch, search, onAddTracker }) {
+export default function TopBar({ onSearch, search, onAddTracker, onOpenSettings }) {
   return (
     <header className="sticky top-0 z-10 hidden h-16 items-center gap-4 border-b border-border-subtle bg-bg-main/80 px-6 backdrop-blur-md md:flex">
       <div className="flex items-center gap-2">
@@ -33,6 +33,14 @@ export default function TopBar({ onSearch, search, onAddTracker }) {
       </div>
 
       <div className="ml-auto flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="flex h-9 w-9 items-center justify-center rounded-sm bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+          aria-label="Настройки"
+        >
+          <Settings size={17} />
+        </button>
         <button
           type="button"
           onClick={onAddTracker}

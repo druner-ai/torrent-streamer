@@ -1,4 +1,4 @@
-import { ChevronsLeft, LibraryBig, ListMusic, MicVocal, Rss, Vault } from 'lucide-react'
+import { ChevronsLeft, LibraryBig, ListMusic, MicVocal, Rss, Settings, Vault } from 'lucide-react'
 
 const items = [
   { id: 'library', label: 'Библиотека', icon: LibraryBig },
@@ -7,7 +7,7 @@ const items = [
   { id: 'tracker', label: 'Трекер', icon: Rss },
 ]
 
-export default function Sidebar({ view, onNavigate, counts, collapsed, onToggle }) {
+export default function Sidebar({ view, onNavigate, counts, collapsed, onToggle, onOpenSettings }) {
   return (
     <aside
       className={`sticky top-0 hidden h-screen shrink-0 flex-col border-r border-border-subtle bg-bg-base transition-[width] duration-200 md:flex ${
@@ -54,6 +54,17 @@ export default function Sidebar({ view, onNavigate, counts, collapsed, onToggle 
       </nav>
 
       <div className="border-t border-border-subtle p-3">
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          title={collapsed ? 'Настройки' : undefined}
+          className={`mb-1 flex h-9 w-full items-center gap-2 text-text-muted transition-colors hover:text-text-primary ${
+            collapsed ? 'justify-center' : 'px-2'
+          }`}
+        >
+          <Settings size={18} className="shrink-0" />
+          {!collapsed && <span className="text-[13px]">Настройки</span>}
+        </button>
         <button
           type="button"
           onClick={onToggle}

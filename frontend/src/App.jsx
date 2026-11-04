@@ -4,6 +4,7 @@ import { usePolling } from './hooks/usePolling.js'
 import AlbumModal from './components/AlbumModal.jsx'
 import BottomNav from './components/BottomNav.jsx'
 import PlayerBar from './components/PlayerBar.jsx'
+import SettingsModal from './components/SettingsModal.jsx'
 import Sidebar from './components/Sidebar.jsx'
 import Toast from './components/Toast.jsx'
 import TopBar from './components/TopBar.jsx'
@@ -24,6 +25,7 @@ export default function App() {
   const [openAlbumId, setOpenAlbumId] = useState(null)
   const [libraryQuery, setLibraryQuery] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const pushToast = useCallback((message, type = 'error') => {
     const id = `${Date.now()}-${Math.random()}`
@@ -227,6 +229,7 @@ export default function App() {
         counts={{ albums: albums.length, queue: (queue.queue || []).length }}
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed((v) => !v)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -237,6 +240,7 @@ export default function App() {
             if (view !== 'library') setView('library')
           }}
           onAddTracker={() => setView('tracker')}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
 
         <div
@@ -285,6 +289,12 @@ export default function App() {
         onToggleFavorite={handleToggleFavorite}
         onDelete={handleDeleteAlbum}
         player={player}
+        notify={pushToast}
+      />
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
         notify={pushToast}
       />
 

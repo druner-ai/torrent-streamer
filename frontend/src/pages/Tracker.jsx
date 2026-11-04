@@ -1,4 +1,4 @@
-import { Download, Loader2, Rss, Search, X } from 'lucide-react'
+import { Download, Loader2, RefreshCw, Rss, Search, Settings2, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api.js'
 import { formatSize, seedersTone } from '../utils.js'
@@ -26,11 +26,14 @@ const fmtBadge = (e) => {
   )
 }
 
+const fmtDate = (ts) => (ts ? new Date(ts * 1000).toISOString().slice(0, 10) : '')
+
 export default function Tracker({ notify, onAlbumAdded }) {
-  const [sections, setSections] = useState([])
-  const [sectionId, setSectionId] = useState(null)
-  const [forums, setForums] = useState([])
-  const [forumId, setForumId] = useState(null)
+  const [tree, setTree] = useState([])
+  const [catIdx, setCatIdx] = useState(null)
+  const [groupIdx, setGroupIdx] = useState(null)
+  const [subId, setSubId] = useState(null)
+  const [sortNew, setSortNew] = useState(false)
   const [minSeeders, setMinSeeders] = useState(0)
   const [losslessOnly, setLosslessOnly] = useState(false)
   const [qInput, setQInput] = useState('')
@@ -41,32 +44,58 @@ export default function Tracker({ notify, onAlbumAdded }) {
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(null)
   const [downloadingT, setDownloadingT] = useState(null)
+  const [sectionsOpen, setSectionsOpen] = useState(false)
+  const [draftEnabled, setDraftEnabled] = useState(null)
+  const [treeSaving, setTreeSaving] = useState(false)
+  const [treeRefreshing, setTreeRefreshing] = useState(false)
 
-  useEffect(() => {
-    let alive = true
-    api
-      .catalogSections()
-      .then((data) => {
-        if (alive) setSections(data.sections || [])
-      })
-      .catch((e) => {
-        if (alive) notify(e.message, 'error')
-      })
-    return () => {
-      alive = false
+  const loadTree = async () => {
+    try {
+      const data = await api.catalogTree()
+      setTree(data.categories || [])
+    } catch (e) {
+      notify(e.message, 'error')
     }
-  }, [notify])
+  }
 
   useEffect(() => {
-    const section = sections.find((s) => s.id === sectionId)
-    setForums(section ? section.forums || [] : [])
-    setForumId(null)
-  }, [sectionId, sections])
+    loadTree()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     const id = setTimeout(() => setQ(qInput.trim()), 300)
     return () => clearTimeout(id)
   }, [qInput])
+
+  const leafForums = (category) => {
+    const ids = []
+    for (const g of category.forums) {
+      if (g.subforums.length) {
+        g.subforums.forEach((s) => {
+          if (s.enabled) ids.push(s.id)
+        })
+      } else if (g.enabled) {
+        ids.push(g.id)
+      }
+    }
+    return ids
+  }
+
+  const allEnabledLeaves = () => tree.flatMap(leafForums)
+
+  const forumIds = useMemo(() => {
+    if (subId) return [subId]
+    const cat = catIdx != null ? tree[catIdx] : null
+    if (groupIdx != null && cat) {
+      const g = cat.forums[groupIdx]
+      if (!g) return []
+      if (g.subforums.length) return g.subforums.filter((s) => s.enabled).map((s) => s.id)
+      return [g.id]
+    }
+    if (cat) return leafForums(cat)
+    return sortNew ? allEnabledLeaves() : []
+  }, [subId, catIdx, groupIdx, tree, sortNew])
 
   useEffect(() => {
     let alive = true
@@ -74,10 +103,11 @@ export default function Tracker({ notify, onAlbumAdded }) {
     setError(null)
     api
       .catalogGroups({
-        forum_id: forumId || undefined,
+        forum_id: forumIds.length ? forumIds : undefined,
         min_seeders: minSeeders || undefined,
         lossless: losslessOnly ? true : undefined,
         q: q || undefined,
+        sort: sortNew ? 'new' : undefined,
       })
       .then((data) => {
         if (!alive) return
@@ -93,11 +123,15 @@ export default function Tracker({ notify, onAlbumAdded }) {
     return () => {
       alive = false
     }
-  }, [forumId, minSeeders, losslessOnly, q])
+  }, [forumIds, minSeeders, losslessOnly, q, sortNew])
 
-  const activeSection = useMemo(
-    () => sections.find((s) => s.id === sectionId),
-    [sections, sectionId],
+  const activeCategory = useMemo(
+    () => (catIdx != null ? tree[catIdx] : null),
+    [tree, catIdx],
+  )
+  const activeGroup = useMemo(
+    () => (activeCategory && groupIdx != null ? activeCategory.forums[groupIdx] : null),
+    [activeCategory, groupIdx],
   )
 
   async function download(edition) {
@@ -114,6 +148,57 @@ export default function Tracker({ notify, onAlbumAdded }) {
     }
   }
 
+  function openSections() {
+    const s = new Set()
+    tree.forEach((c) =>
+      c.forums.forEach((g) => {
+        if (g.subforums.length) {
+          g.subforums.forEach((sf) => sf.enabled && s.add(sf.id))
+        } else if (g.enabled) {
+          s.add(g.id)
+        }
+      }),
+    )
+    setDraftEnabled(s)
+    setSectionsOpen(true)
+  }
+
+  function toggleDraft(id) {
+    setDraftEnabled((prev) => {
+      const n = new Set(prev)
+      if (n.has(id)) n.delete(id)
+      else n.add(id)
+      return n
+    })
+  }
+
+  async function saveSections() {
+    setTreeSaving(true)
+    try {
+      await api.saveCatalogTree([...(draftEnabled || [])])
+      notify('Разделы сохранены', 'success')
+      setSectionsOpen(false)
+      await loadTree()
+    } catch (e) {
+      notify(e.message, 'error')
+    } finally {
+      setTreeSaving(false)
+    }
+  }
+
+  async function refreshTree() {
+    setTreeRefreshing(true)
+    try {
+      await api.refreshCatalogTree()
+      await loadTree()
+      notify('Дерево разделов обновлено', 'success')
+    } catch (e) {
+      notify(e.message, 'error')
+    } finally {
+      setTreeRefreshing(false)
+    }
+  }
+
   const chip = (active) =>
     `shrink-0 rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
       active
@@ -121,37 +206,76 @@ export default function Tracker({ notify, onAlbumAdded }) {
         : 'bg-surface-1 text-text-secondary hover:bg-surface-2'
     }`
 
+  const subChip = (active) =>
+    `shrink-0 rounded-sm px-3 py-1.5 text-[12px] transition-colors ${
+      active
+        ? 'bg-surface-2 text-primary ring-1 ring-border-strong'
+        : 'bg-surface-1 text-text-muted hover:bg-surface-2 hover:text-text-primary'
+    }`
+
   return (
     <div className="mx-auto max-w-[1400px] px-4 py-8 md:px-6">
-      <h1 className="mb-7 font-display text-[30px] font-bold leading-[38px] tracking-tight text-text-primary">
-        Трекер
-      </h1>
+      <div className="mb-7 flex items-center gap-3">
+        <h1 className="font-display text-[30px] font-bold leading-[38px] tracking-tight text-text-primary">
+          Трекер
+        </h1>
+        <button
+          type="button"
+          onClick={openSections}
+          className="ml-auto flex h-9 items-center gap-2 rounded-sm bg-surface-1 px-3 text-[12.5px] font-medium text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+        >
+          <Settings2 size={15} />
+          Разделы
+        </button>
+      </div>
 
+      {/* категории + Новое */}
       <div className="no-scrollbar -mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1">
-        <button type="button" onClick={() => setSectionId(null)} className={chip(sectionId === null)}>
+        <button type="button" onClick={() => { setCatIdx(null); setGroupIdx(null); setSubId(null); setSortNew(false) }} className={chip(catIdx === null && !sortNew)}>
           Все
         </button>
-        {sections.map((s) => (
-          <button key={s.id} type="button" onClick={() => setSectionId(s.id)} className={chip(sectionId === s.id)}>
-            {s.title}
+        <button type="button" onClick={() => { setCatIdx(null); setGroupIdx(null); setSubId(null); setSortNew(true) }} className={chip(sortNew)}>
+          Новое
+        </button>
+        {tree.map((c, i) => (
+          <button
+            key={c.category}
+            type="button"
+            onClick={() => { setCatIdx(i); setGroupIdx(null); setSubId(null); setSortNew(false) }}
+            className={chip(catIdx === i && !sortNew)}
+          >
+            {c.category}
           </button>
         ))}
       </div>
 
-      {activeSection && (
+      {/* группы категории */}
+      {activeCategory && !sortNew && (
         <div className="no-scrollbar -mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1">
-          {forums.map((f) => (
+          {activeCategory.forums.map((g, i) => (
             <button
-              key={f.id}
+              key={g.id}
               type="button"
-              onClick={() => setForumId(f.id)}
-              className={`shrink-0 rounded-sm px-3 py-1.5 text-[12px] transition-colors ${
-                forumId === f.id
-                  ? 'bg-surface-2 text-primary ring-1 ring-border-strong'
-                  : 'bg-surface-1 text-text-muted hover:bg-surface-2 hover:text-text-primary'
-              }`}
+              onClick={() => { setGroupIdx(i); setSubId(null) }}
+              className={subChip(groupIdx === i)}
             >
-              {f.title}
+              {g.title}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* подфорумы группы */}
+      {activeGroup && activeGroup.subforums.length > 0 && !sortNew && (
+        <div className="no-scrollbar -mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1">
+          {activeGroup.subforums.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => setSubId(s.id)}
+              className={subChip(subId === s.id)}
+            >
+              {s.title}
             </button>
           ))}
         </div>
@@ -250,7 +374,11 @@ export default function Tracker({ notify, onAlbumAdded }) {
                   <p className="truncate text-[12px] text-text-secondary">{g.artist || '—'}</p>
                   <p className="mt-1 flex items-center justify-between font-mono text-[10.5px] text-text-muted">
                     <span className={toneText[tone]}>{top.seeders || 0} сид.</span>
-                    {g.year && <span>{g.year}</span>}
+                    {sortNew && g.last_post ? (
+                      <span>{fmtDate(g.last_post)}</span>
+                    ) : (
+                      g.year && <span>{g.year}</span>
+                    )}
                   </p>
                 </div>
               </button>
@@ -259,6 +387,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
         </div>
       )}
 
+      {/* модалка выбора издания */}
       {selected && (
         <div
           className="fixed inset-0 z-40 flex items-end justify-center bg-overlay md:items-center"
@@ -328,6 +457,109 @@ export default function Tracker({ notify, onAlbumAdded }) {
                 )
               })}
             </ul>
+          </div>
+        </div>
+      )}
+
+      {/* модалка выбора разделов */}
+      {sectionsOpen && (
+        <div
+          className="fixed inset-0 z-40 flex items-end justify-center bg-overlay md:items-center"
+          onClick={() => setSectionsOpen(false)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-t-xl bg-surface-3 shadow-4 md:rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 border-b border-border-subtle p-5">
+              <h2 className="text-[18px] font-semibold text-text-primary">Разделы трекера</h2>
+              <button
+                type="button"
+                onClick={refreshTree}
+                disabled={treeRefreshing}
+                className="ml-auto flex items-center gap-2 rounded-sm bg-surface-1 px-3 py-1.5 text-[12px] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-60"
+              >
+                {treeRefreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                Обновить
+              </button>
+              <button
+                type="button"
+                onClick={() => setSectionsOpen(false)}
+                className="rounded-sm p-1 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-primary"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {tree.length === 0 ? (
+                <div className="flex flex-col items-center gap-3 py-10">
+                  <p className="text-[14px] text-text-secondary">
+                    Дерево ещё не загружено — нажмите «Обновить», чтобы подтянуть разделы с RuTracker.
+                  </p>
+                </div>
+              ) : (
+                tree.map((c) => (
+                  <div key={c.category} className="mb-5">
+                    <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-text-muted">
+                      {c.category}
+                    </h3>
+                    {c.forums.map((g) => (
+                      <div key={g.id} className="mb-1">
+                        {g.subforums.length > 0 ? (
+                          <div>
+                            <p className="py-1 text-[13px] font-medium text-text-primary">{g.title}</p>
+                            {g.subforums.map((s) => (
+                              <label
+                                key={s.id}
+                                className="ml-4 flex cursor-pointer items-center gap-2 py-1 text-[13px] text-text-secondary"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draftEnabled ? draftEnabled.has(s.id) : s.enabled}
+                                  onChange={() => toggleDraft(s.id)}
+                                  className="h-4 w-4 rounded-xs border-border-strong bg-surface-inset accent-primary"
+                                />
+                                {s.title}
+                              </label>
+                            ))}
+                          </div>
+                        ) : (
+                          <label className="flex cursor-pointer items-center gap-2 py-1 text-[13px] text-text-secondary">
+                            <input
+                              type="checkbox"
+                              checked={draftEnabled ? draftEnabled.has(g.id) : g.enabled}
+                              onChange={() => toggleDraft(g.id)}
+                              className="h-4 w-4 rounded-xs border-border-strong bg-surface-inset accent-primary"
+                            />
+                            {g.title}
+                          </label>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 border-t border-border-subtle p-4">
+              <button
+                type="button"
+                onClick={() => setSectionsOpen(false)}
+                className="rounded-sm px-4 py-2 text-[13px] text-text-secondary transition-colors hover:bg-surface-2"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={saveSections}
+                disabled={treeSaving}
+                className="flex items-center gap-2 rounded-sm bg-primary px-4 py-2 text-[13px] font-medium text-on-primary transition-colors hover:bg-primary-hover disabled:opacity-60"
+              >
+                {treeSaving && <Loader2 size={14} className="animate-spin" />}
+                Сохранить
+              </button>
+            </div>
           </div>
         </div>
       )}

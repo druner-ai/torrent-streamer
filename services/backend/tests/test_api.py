@@ -597,3 +597,114 @@ def test_player_sleep_off():
     r = client.post("/api/player/sleep?minutes=0")
     assert r.status_code == 200
     assert r.json() == {"ok": True, "sleep": None}
+
+
+# ---------- трекер: фильтры, дерево, настройки, «Новое» ----------
+
+def test_parse_index_tree():
+    page = (
+        '<div id="c-31" class="category">'
+        '<h3 class="cat_title"><a href="index.php?c=31">Джазовая и Блюзовая музыка</a></h3>'
+        '<table><tr id="f-2267"><td class="row1">'
+        '<h4 class="forumlink"><a href="viewforum.php?f=2267">Зарубежный джаз</a></h4>'
+        '<p class="subforums">'
+        '<span class="sf_title">•<a href="viewforum.php?f=2277">Bop</a></span>'
+        '<span class="sf_title">•<a href="viewforum.php?f=2278">Early Jazz</a></span>'
+        '</p></td></tr>'
+        '<tr id="f-2269"><td class="row1">'
+        '<h4 class="forumlink"><a href="viewforum.php?f=2269">Отечественный джаз</a></h4>'
+        '</td></tr></table></div><!--/category-->'
+    )
+    tree = main._parse_index_tree(page)
+    assert len(tree) == 1
+    cat = tree[0]
+    assert cat["category"] == "Джазовая и Блюзовая музыка"
+    assert len(cat["forums"]) == 2
+    jazz = cat["forums"][0]
+    assert jazz["id"] == 2267
+    assert [s["id"] for s in jazz["subforums"]] == [2277, 2278]
+    # группа без подфорумов
+    assert cat["forums"][1]["id"] == 2269
+    assert cat["forums"][1]["subforums"] == []
+
+
+def test_parse_forum_page_last_post():
+    page = (
+        '<tr id="tr-1" data-topic_id="1"><td>'
+        '<a id="tt-1" class="torTopic tt-text">(Bop) Duke - Album (1967) FLAC</a>'
+        '<span class="seedmed"><b>8</b></span>'
+        '<span class="leechmed"><b>5</b></span>'
+        '<a class="dl-stub">1.2&nbsp;GB</a>'
+        '<td class="vf-col-last-post"><p>2026-02-23 19:02</p></td>'
+        '</tr>'
+    )
+    rows = main._parse_forum_page(page)
+    assert len(rows) == 1
+    assert rows[0]["t"] == 1
+    assert rows[0]["last_post"] > 0
+
+
+def test_catalog_multi_forum_filter(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        with main.db() as c:
+            for t, fid in ((100, 2277), (101, 2278), (102, 9999)):
+                c.execute("INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at)"
+                          " VALUES(?,?,?,?,?,?,?)", (t, fid, f"title{t}", "1GB", 1, 0, 0))
+            c.commit()
+        r = client.get("/api/catalog?forum_id=2277&forum_id=2278")
+        assert r.status_code == 200
+        ids = {x["t"] for x in r.json()["items"]}
+        assert ids == {100, 101}
+
+
+def test_catalog_groups_sort_new(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        with main.db() as c:
+            # два релиза: у первого last_post старее, у второго — свежее
+            c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
+                          lossless,artist,album,release_key,last_post)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (1, 2277, "X - Old (2000) FLAC", "1GB", 1, 0, 0, 1, "X", "Old", "x|old", 1000))
+            c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
+                          lossless,artist,album,release_key,last_post)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (2, 2277, "Y - New (2024) FLAC", "1GB", 1, 0, 0, 1, "Y", "New", "y|new", 9000))
+            c.commit()
+        r = client.get("/api/catalog/groups?sort=new")
+        assert r.status_code == 200
+        groups = r.json()["groups"]
+        assert [g["album"] for g in groups] == ["New", "Old"]
+
+
+def test_settings_save_get(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        r = client.get("/api/settings")
+        assert r.status_code == 200
+        assert r.json()["rutracker_password_set"] is False
+
+        r = client.post("/api/settings", json={"rutracker_login": "user1",
+                                               "rutracker_password": "s3cret"})
+        assert r.status_code == 200
+
+        r = client.get("/api/settings")
+        body = r.json()
+        assert body["rutracker_login"] == "user1"
+        assert body["rutracker_password_set"] is True
+        assert "s3cret" not in str(body)  # пароль наружу не отдаём
+
+
+def test_catalog_tree_save_get(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        with main.db() as c:
+            c.execute("INSERT INTO forums(forum_id,title,parent_id,category,enabled)"
+                      " VALUES(2267,'Джаз',0,'Джаз',0)")
+            c.execute("INSERT INTO forums(forum_id,title,parent_id,category,enabled)"
+                      " VALUES(2277,'Bop',2267,'Джаз',0)")
+            c.commit()
+        r = client.post("/api/catalog/tree", json={"enabled": [2277]})
+        assert r.status_code == 200
+        r = client.get("/api/catalog/tree")
+        cats = r.json()["categories"]
+        jazz = cats[0]["forums"][0]
+        assert jazz["enabled"] is False          # группа-контейнер
+        assert jazz["subforums"][0]["enabled"] is True  # выбран подфорум

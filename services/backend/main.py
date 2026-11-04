@@ -15,9 +15,10 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
+from typing import Annotated
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from mpd import MPDClient
@@ -232,6 +233,13 @@ def _schema(c):
                 "genre TEXT"):
         with contextlib.suppress(sqlite3.OperationalError):
             c.execute(f"ALTER TABLE catalog ADD COLUMN {col}")
+    with contextlib.suppress(sqlite3.OperationalError):
+        c.execute("ALTER TABLE catalog ADD COLUMN last_post INTEGER")
+    c.execute("""CREATE TABLE IF NOT EXISTS settings(
+        key TEXT PRIMARY KEY, value TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS forums(
+        forum_id INTEGER PRIMARY KEY, title TEXT, parent_id INTEGER DEFAULT 0,
+        category TEXT, enabled INTEGER DEFAULT 0)""")
     c.commit()
 
 
@@ -249,6 +257,28 @@ def db():
                 _schema(c)
                 _schema_path = DB_PATH
     return c
+
+
+# ---------- настройки (settings-таблица, fallback на env) ----------
+def _get_setting(key: str) -> str:
+    with db() as c:
+        row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else ""
+
+
+def _set_setting(key: str, value: str):
+    with db() as c:
+        c.execute("INSERT INTO settings(key,value) VALUES(?,?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+        c.commit()
+
+
+def _rutracker_login() -> str:
+    return _get_setting("rutracker_login") or RUTRACKER_LOGIN
+
+
+def _rutracker_password() -> str:
+    return _get_setting("rutracker_password") or RUTRACKER_PASSWORD
 
 
 # ---------- MusicBrainz ----------
@@ -474,6 +504,14 @@ def _parse_forum_page(page: str) -> list[dict]:
         sz = re.search(r'class="[^"]*dl-stub[^"]*">([^<]+)</a>', tr)
         title = re.sub(r"\s+", " ", html.unescape(title_raw)).strip()
         ym = re.search(r"\b(19|20)\d{2}\b", title)
+        lp = re.search(r'vf-col-last-post[^>]*>\s*<p>([^<]+)</p>', tr)
+        last_post = 0
+        if lp:
+            try:
+                last_post = int(time.mktime(time.strptime(lp.group(1).strip(),
+                                                          "%Y-%m-%d %H:%M")))
+            except ValueError:
+                last_post = 0
         rows.append({
             "t": tid,
             "title": title,
@@ -482,6 +520,7 @@ def _parse_forum_page(page: str) -> list[dict]:
             "size": (sz.group(1) or "").replace("&nbsp;", " ").strip() if sz else "",
             "lossless": _guess_lossless(title),
             "year": ym.group(0) if ym else None,
+            "last_post": last_post,
         })
     return rows
 
@@ -500,13 +539,13 @@ def crawl_forum(forum_id: int, pages: int = 3) -> list[dict]:
 
 
 @app.get("/api/catalog")
-def catalog(forum_id: int | None = None, min_seeders: int = 0, lossless: bool | None = None,
-            q: str | None = None):
+def catalog(forum_id: Annotated[list[int] | None, Query()] = None, min_seeders: int = 0,
+            lossless: bool | None = None, q: str | None = None):
     sql = "SELECT * FROM catalog WHERE 1=1"
     params: list = []
     if forum_id:
-        sql += " AND forum_id=?"
-        params.append(forum_id)
+        sql += f" AND forum_id IN ({','.join('?' * len(forum_id))})"
+        params += forum_id
     if min_seeders > 0:
         sql += " AND seeders>=?"
         params.append(min_seeders)
@@ -530,16 +569,37 @@ def catalog_sections():
         for k, v in FORUM_CATALOG.items()]}
 
 
+class SettingsReq(BaseModel):
+    rutracker_login: str | None = None
+    rutracker_password: str | None = None
+
+
+@app.get("/api/settings")
+def settings():
+    """логин/пароль трекеров (пароль не отдаём, только флаг)."""
+    return {"rutracker_login": _rutracker_login(),
+            "rutracker_password_set": bool(_rutracker_password())}
+
+
+@app.post("/api/settings")
+def settings_save(req: SettingsReq):
+    if req.rutracker_login is not None:
+        _set_setting("rutracker_login", req.rutracker_login.strip())
+    if req.rutracker_password is not None and req.rutracker_password.strip():
+        _set_setting("rutracker_password", req.rutracker_password.strip())
+    return {"ok": True}
+
+
 @app.get("/api/catalog/groups")
-def catalog_groups(forum_id: int | None = None, min_seeders: int = 0,
-                   lossless: bool | None = None, q: str | None = None,
-                   genre: str | None = None):
+def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
+                   min_seeders: int = 0, lossless: bool | None = None, q: str | None = None,
+                   genre: str | None = None, sort: str = "seeders"):
     """раздачи, сгруппированные по релизу (release_key) → выбор качества (издания)."""
     sql = "SELECT * FROM catalog WHERE 1=1"
     params: list = []
     if forum_id:
-        sql += " AND forum_id=?"
-        params.append(forum_id)
+        sql += f" AND forum_id IN ({','.join('?' * len(forum_id))})"
+        params += forum_id
     if min_seeders > 0:
         sql += " AND seeders>=?"
         params.append(min_seeders)
@@ -561,17 +621,21 @@ def catalog_groups(forum_id: int | None = None, min_seeders: int = 0,
         g = groups.setdefault(rk, {
             "release_key": rk, "artist": r["artist"], "album": r["album"],
             "year": r["year"], "cover_url": r["cover_url"], "genre": r["genre"],
-            "editions": []})
+            "last_post": 0, "editions": []})
         if r["cover_url"] and not g["cover_url"]:
             g["cover_url"] = r["cover_url"]
         if r["genre"] and not g["genre"]:
             g["genre"] = r["genre"]
+        g["last_post"] = max(g["last_post"], r["last_post"] or 0)
         g["editions"].append({
             "t": r["t"], "title": r["title"], "format": r["format"],
             "bitrate": r["bitrate"], "lossless": r["lossless"],
             "seeders": r["seeders"], "leechers": r["leechers"],
-            "size": r["size"], "year": r["year"]})
-    out = sorted(groups.values(), key=lambda g: -max(e["seeders"] for e in g["editions"]))
+            "size": r["size"], "year": r["year"], "last_post": r["last_post"] or 0})
+    if sort == "new":
+        out = sorted(groups.values(), key=lambda g: -(g["last_post"] or 0))
+    else:
+        out = sorted(groups.values(), key=lambda g: -max(e["seeders"] for e in g["editions"]))
     for g in out:
         g["editions"].sort(key=lambda e: -e["seeders"])
         g["count"] = len(g["editions"])
@@ -592,17 +656,19 @@ def catalog_refresh(req: CatalogRefreshReq):
             rk = _release_key(p["artist"], p["album"])
             c.execute(
                 """INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
-                                       lossless,year,artist,album,format,bitrate,release_key,genre)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                       lossless,year,artist,album,format,bitrate,release_key,genre,last_post)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(t) DO UPDATE SET seeders=excluded.seeders,
                        leechers=excluded.leechers, lossless=excluded.lossless,
                        year=excluded.year, crawled_at=excluded.crawled_at,
                        artist=excluded.artist, album=excluded.album,
                        format=excluded.format, bitrate=excluded.bitrate,
-                       release_key=excluded.release_key, genre=excluded.genre""",
+                       release_key=excluded.release_key, genre=excluded.genre,
+                       last_post=excluded.last_post""",
                 (r["t"], r["forum_id"], r["title"], r["size"], r["seeders"],
                  r["leechers"], now, p["lossless"], p["year"], p["artist"],
-                 p["album"], p["format"], p["bitrate"], rk, p["genre"]),
+                 p["album"], p["format"], p["bitrate"], rk, p["genre"],
+                 r["last_post"]),
             )
         c.commit()
     return {"ok": True, "count": len(crawled)}
@@ -616,8 +682,8 @@ def catalog_covers(limit: int = 300):
 
 def _rutracker_cookies() -> list[dict]:
     """логин RuTracker через FlareSolverr → cookies (bb_session и др.)."""
-    data = ("login_username=" + urllib.parse.quote(RUTRACKER_LOGIN)
-            + "&login_password=" + urllib.parse.quote(RUTRACKER_PASSWORD)
+    data = ("login_username=" + urllib.parse.quote(_rutracker_login())
+            + "&login_password=" + urllib.parse.quote(_rutracker_password())
             + "&login=%E2%F5%EE%E4")
     r = requests.post(f"{FLARESOLVERR_URL}/v1",
                       json={"cmd": "request.post", "url": f"{RUTRACKER_BASE}/login.php",
@@ -629,8 +695,8 @@ def _rutracker_cookies() -> list[dict]:
 
 @app.post("/api/catalog/download")
 def catalog_download(req: CatalogDownloadReq):
-    if not (RUTRACKER_LOGIN and RUTRACKER_PASSWORD):
-        raise HTTPException(400, "не задан логин RuTracker (RUTRACKER_LOGIN/RUTRACKER_PASSWORD)")
+    if not (_rutracker_login() and _rutracker_password()):
+        raise HTTPException(400, "не задан логин RuTracker (настройки или RUTRACKER_LOGIN/RUTRACKER_PASSWORD)")
     jar = {c["name"]: c["value"] for c in _rutracker_cookies() if c.get("name")}
     r = requests.get(f"{RUTRACKER_BASE}/dl.php?t={req.t}", cookies=jar, timeout=30,
                      headers={"Referer": f"{RUTRACKER_BASE}/viewtopic.php?t={req.t}",
@@ -795,6 +861,94 @@ def catalog_reimport():
         except HTTPException:
             continue  # нет аудиофайлов — пропускаем
     return {"imported": n}
+
+
+# ---------- дерево трекера (полный список форумов RuTracker) ----------
+DEFAULT_ENABLED = {f for v in FORUM_CATALOG.values() for f, _ in v["forums"]}
+
+
+def _parse_index_tree(page: str) -> list[dict]:
+    """дерево index.php RuTracker: категория → форум-группа → подфорумы."""
+    tree = []
+    for cat_block in re.findall(r'<div id="c-\d+" class="category">(.*?)</div><!--/category-->',
+                                page, re.DOTALL):
+        h3 = re.search(r"<h3[^>]*>(.*?)</h3>", cat_block, re.DOTALL)
+        cat_name = (html.unescape(re.sub(r"\s+", " ",
+                    re.sub(r"<[^>]+>", "", h3.group(1)))).strip() if h3 else "?")
+        forums = []
+        for fid_s, body in re.findall(r'<tr id="f-(\d+)">(.*?)</tr>', cat_block, re.DOTALL):
+            h4 = re.search(r"<h4[^>]*>\s*<a[^>]*>([^<]*)</a>", body)
+            ftitle = html.unescape(re.sub(r"\s+", " ", h4.group(1))).strip() if h4 else f"f={fid_s}"
+            sf = re.search(r'<p class="subforums">(.*?)</p>', body, re.DOTALL)
+            subs = re.findall(r'viewforum\.php\?f=(\d+)"[^>]*>([^<]+)<', sf.group(1)) if sf else []
+            forums.append({
+                "id": int(fid_s), "title": ftitle,
+                "subforums": [{"id": int(s), "title": html.unescape(re.sub(r"\s+", " ", t)).strip()}
+                              for s, t in subs]})
+        tree.append({"category": cat_name, "forums": forums})
+    return tree
+
+
+class TreeSaveReq(BaseModel):
+    enabled: list[int] = []
+
+
+@app.post("/api/catalog/tree/refresh")
+def catalog_tree_refresh():
+    """краулит index.php → полное дерево форумов → таблица forums."""
+    html = _flaresolverr_get(f"{RUTRACKER_BASE}/index.php")
+    tree = _parse_index_tree(html)
+    if not tree:
+        raise HTTPException(502, "не удалось разобрать дерево форумов")
+    with db() as c:
+        empty = c.execute("SELECT COUNT(*) AS n FROM forums").fetchone()["n"] == 0
+        for cat in tree:
+            for f in cat["forums"]:
+                c.execute("""INSERT INTO forums(forum_id,title,parent_id,category,enabled)
+                             VALUES(?,?,?,?,?)
+                             ON CONFLICT(forum_id) DO UPDATE SET title=excluded.title,
+                                parent_id=excluded.parent_id, category=excluded.category""",
+                          (f["id"], f["title"], 0, cat["category"],
+                           1 if (empty and f["id"] in DEFAULT_ENABLED) else 0))
+                for s in f["subforums"]:
+                    c.execute("""INSERT INTO forums(forum_id,title,parent_id,category,enabled)
+                                 VALUES(?,?,?,?,?)
+                                 ON CONFLICT(forum_id) DO UPDATE SET title=excluded.title,
+                                    parent_id=excluded.parent_id, category=excluded.category""",
+                              (s["id"], s["title"], f["id"], cat["category"],
+                               1 if (empty and s["id"] in DEFAULT_ENABLED) else 0))
+        c.commit()
+    return {"ok": True, "categories": len(tree)}
+
+
+@app.get("/api/catalog/tree")
+def catalog_tree():
+    with db() as c:
+        rows = c.execute("SELECT * FROM forums ORDER BY category, parent_id, forum_id").fetchall()
+    cats: dict[str, list] = {}
+    groups: dict[int, dict] = {}
+    for r in rows:
+        if r["parent_id"] == 0:
+            g = {"id": r["forum_id"], "title": r["title"],
+                 "enabled": bool(r["enabled"]), "subforums": []}
+            groups[r["forum_id"]] = g
+            cats.setdefault(r["category"], []).append(g)
+        elif r["parent_id"] in groups:
+            groups[r["parent_id"]]["subforums"].append(
+                {"id": r["forum_id"], "title": r["title"], "enabled": bool(r["enabled"])})
+    return {"categories": [{"category": k, "forums": v} for k, v in cats.items()]}
+
+
+@app.post("/api/catalog/tree")
+def catalog_tree_save(req: TreeSaveReq):
+    ids = set(req.enabled)
+    with db() as c:
+        c.execute("UPDATE forums SET enabled=0")
+        for fid in ids:
+            c.execute("UPDATE forums SET enabled=1 WHERE forum_id=?", (fid,))
+        c.commit()
+    return {"ok": True, "enabled": len(ids)}
+
 
 def _torrent_state(state: str) -> str:
     """qbittorrent state → читаемый статус альбома."""
