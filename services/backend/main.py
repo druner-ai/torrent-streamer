@@ -484,6 +484,34 @@ def mpd_cmd(fn):
 class AddReq(BaseModel):
     link: str
 
+def _register_album(h: str, name: str, files: list) -> tuple[int, list]:
+    """создаёт запись альбома + треки в библиотеке; возвращает (album_id, audio_files)."""
+    audio = [f for f in files if Path(f["name"]).suffix.lower() in AUDIO_EXT]
+    if not audio:
+        raise HTTPException(400, "в раздаче нет аудиофайлов")
+    c = db()
+    try:
+        try:
+            meta = enrich_album(name)
+        except Exception:  # noqa: BLE001 — обогащение необязательно
+            meta = None
+        artist = meta.get("artist") if meta else None
+        cover_url = meta.get("cover_url") if meta else None
+        cur = c.execute(
+            "INSERT INTO albums(hash,name,status,added_at,artist,cover_url,release_key) VALUES(?,?,?,?,?,?,?)",
+            (h, name, "downloading", int(time.time()), artist, cover_url,
+             _release_key(artist, name)),
+        )
+        aid = cur.lastrowid
+        for f in audio:
+            c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                      (aid, f["name"], Path(f["name"]).name, f["size"]))
+        c.commit()
+    except sqlite3.IntegrityError:
+        aid = c.execute("SELECT id FROM albums WHERE hash=?", (h,)).fetchone()["id"]
+    return aid, audio
+
+
 def _import_torrent(qb: "QB", before: set) -> dict:
     """ждёт метаданные нового торрента (hash не из `before`) и заводит альбом в библиотеку."""
     info = None
@@ -498,30 +526,7 @@ def _import_torrent(qb: "QB", before: set) -> dict:
     if not info:
         raise HTTPException(500, "не удалось получить метаданные торрента")
     h = info["hash"]
-    files = qb.files(h)
-    audio = [f for f in files if Path(f["name"]).suffix.lower() in AUDIO_EXT]
-    if not audio:
-        raise HTTPException(400, "в раздаче нет аудиофайлов")
-    c = db()
-    try:
-        try:
-            meta = enrich_album(info["name"])
-        except Exception:  # noqa: BLE001 — обогащение необязательно
-            meta = None
-        artist = meta.get("artist") if meta else None
-        cover_url = meta.get("cover_url") if meta else None
-        cur = c.execute(
-            "INSERT INTO albums(hash,name,status,added_at,artist,cover_url,release_key) VALUES(?,?,?,?,?,?,?)",
-            (h, info["name"], "downloading", int(time.time()), artist, cover_url,
-             _release_key(artist, info["name"])),
-        )
-        aid = cur.lastrowid
-        for f in audio:
-            c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
-                      (aid, f["name"], Path(f["name"]).name, f["size"]))
-        c.commit()
-    except sqlite3.IntegrityError:
-        aid = c.execute("SELECT id FROM albums WHERE hash=?", (h,)).fetchone()["id"]
+    aid, audio = _register_album(h, info["name"], qb.files(h))
     qb.set_priority(h, {f["name"] for f in audio})
     return {"album_id": aid, "hash": h, "name": info["name"], "tracks": len(audio)}
 
@@ -532,6 +537,25 @@ def add(req: AddReq):
     before = {t.get("hash") for t in qb.info() if t.get("hash")}
     qb.add(req.link)
     return JSONResponse(_import_torrent(qb, before))
+
+
+@app.post("/api/catalog/reimport")
+def catalog_reimport():
+    """заводит в библиотеку все торренты qbittorrent, которых ещё нет в albums."""
+    qb = QB()
+    with db() as c:
+        existing = {r["hash"] for r in c.execute("SELECT hash FROM albums").fetchall()}
+    n = 0
+    for t in qb.info():
+        if not (t.get("hash") and t.get("name")) or t["hash"] in existing:
+            continue
+        try:
+            aid, audio = _register_album(t["hash"], t["name"], qb.files(t["hash"]))
+            qb.set_priority(t["hash"], {f["name"] for f in audio})
+            n += 1
+        except HTTPException:
+            continue  # нет аудиофайлов — пропускаем
+    return {"imported": n}
 
 def _torrent_state(state: str) -> str:
     """qbittorrent state → читаемый статус альбома."""
