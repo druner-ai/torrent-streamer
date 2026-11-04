@@ -505,19 +505,28 @@ export default function Tracker({ notify, onAlbumAdded }) {
           onClick={() => setSectionsOpen(false)}
         >
           <div
-            className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-t-xl bg-surface-3 shadow-4 md:rounded-lg"
+            className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-t-xl bg-surface-3 pb-[env(safe-area-inset-bottom)] shadow-4 md:rounded-lg md:pb-0"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center gap-3 border-b border-border-subtle p-5">
-              <h2 className="text-[18px] font-semibold text-text-primary">Разделы трекера</h2>
+            <div className="flex items-center gap-2 border-b border-border-subtle p-4">
+              <h2 className="text-[17px] font-semibold text-text-primary">Разделы трекера</h2>
               <button
                 type="button"
                 onClick={refreshTree}
                 disabled={treeRefreshing}
-                className="ml-auto flex items-center gap-2 rounded-sm bg-surface-1 px-3 py-1.5 text-[12px] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-60"
+                className="ml-auto flex h-9 items-center gap-2 rounded-sm bg-surface-1 px-2.5 text-[12px] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-60"
               >
-                {treeRefreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                Обновить
+                {treeRefreshing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+                <span className="hidden sm:inline">Обновить</span>
+              </button>
+              <button
+                type="button"
+                onClick={saveSections}
+                disabled={treeSaving}
+                className="flex h-9 items-center gap-2 rounded-sm bg-primary px-3.5 text-[13px] font-medium text-on-primary transition-colors hover:bg-primary-hover disabled:opacity-60"
+              >
+                {treeSaving && <Loader2 size={14} className="animate-spin" />}
+                Сохранить
               </button>
               <button
                 type="button"
@@ -608,25 +617,6 @@ export default function Tracker({ notify, onAlbumAdded }) {
                     )
                   })
               )}
-            </div>
-
-            <div className="flex justify-end gap-3 border-t border-border-subtle p-4">
-              <button
-                type="button"
-                onClick={() => setSectionsOpen(false)}
-                className="rounded-sm px-4 py-2 text-[13px] text-text-secondary transition-colors hover:bg-surface-2"
-              >
-                Отмена
-              </button>
-              <button
-                type="button"
-                onClick={saveSections}
-                disabled={treeSaving}
-                className="flex items-center gap-2 rounded-sm bg-primary px-4 py-2 text-[13px] font-medium text-on-primary transition-colors hover:bg-primary-hover disabled:opacity-60"
-              >
-                {treeSaving && <Loader2 size={14} className="animate-spin" />}
-                Сохранить
-              </button>
             </div>
           </div>
         </div>
