@@ -1143,10 +1143,15 @@ def album_files(aid: int):
     except Exception:  # noqa: BLE001 — торрент не найден / qbt недоступен
         files = {}
     out = []
-    for t in tracks:
+    for idx, t in enumerate(tracks):
         f = files.get(t["path"])
         progress = f["progress"] if f else 0.0
         ready = bool(progress >= 1.0)
+        if ready and save_path:
+            abs_path = os.path.join(save_path, t["path"])
+            # пред-декодируем следующий за текущим играющим треком (мгновенный next)
+            if _OAAT_ALBUM_ID == aid and idx == (_OAAT_TRACK_INDEX or 0) + 1:
+                _predecode(aid, idx, abs_path)
         title = t["title"]
         duration = t["duration"]
         fmt = t["format"]
@@ -1359,6 +1364,45 @@ def _ts_cmd(payload: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+_DECODE_JOBS: set = set()
+_DECODE_LOCK = threading.Lock()
+
+
+def _wav_path(aid: int, idx: int) -> str:
+    return f"/tmp/oaat_stream_{aid}_{idx}.wav"
+
+
+def _predecode(aid: int, idx: int, abs_path: str):
+    """фоновое декодирование FLAC/DSD/MP3 → WAV (lossless; для PCM-кодеков бит-перфект),
+    чтобы play/next был мгновенным, а не ждал синхронный ffmpeg."""
+    if Path(abs_path).suffix.lower() == ".wav":
+        return
+    wav = _wav_path(aid, idx)
+    if os.path.exists(wav) and os.path.getsize(wav) > 0:
+        return
+    key = (aid, idx)
+    with _DECODE_LOCK:
+        if key in _DECODE_JOBS:
+            return
+        _DECODE_JOBS.add(key)
+
+    def job():
+        try:
+            tmp = wav + ".part"
+            conv = subprocess.run([FFMPEG, "-y", "-i", abs_path, "-f", "wav", tmp],
+                                  check=False, capture_output=True)
+            if conv.returncode == 0:
+                os.replace(tmp, wav)
+            else:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp)
+        finally:
+            with _DECODE_LOCK:
+                _DECODE_JOBS.discard(key)
+
+    threading.Thread(target=job, daemon=True).start()
+
+
 def _start_track(aid, idx, offset=0.0):
     global _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_TRACK_NAME, _OAAT_TRACK_TITLE
     global _OAAT_DURATION, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL, _OAAT_FORMAT
@@ -1381,15 +1425,22 @@ def _start_track(aid, idx, offset=0.0):
     # ts-controller стримит только WAV → декодируем остальное (FLAC/DSD/mp3)
     # через ffmpeg в lossless PCM; перемотку делает сам контроллер (без -ss).
     if Path(abs_path).suffix.lower() != ".wav":
-        stream_path = f"/tmp/oaat_stream_{aid}.wav"
-        conv = subprocess.run(
-            [FFMPEG, "-y", "-i", abs_path, "-f", "wav", stream_path],
-            check=False, capture_output=True,
-        )
-        if conv.returncode != 0:
-            raise HTTPException(500, f"ffmpeg не смог декодировать: {conv.stderr.decode(errors='replace')[-200:]}")
+        stream_path = _wav_path(aid, idx)
+        if not (os.path.exists(stream_path) and os.path.getsize(stream_path) > 0):
+            # не успели пред-декодировать — декодируем синхронно (fallback)
+            conv = subprocess.run(
+                [FFMPEG, "-y", "-i", abs_path, "-f", "wav", stream_path],
+                check=False, capture_output=True,
+            )
+            if conv.returncode != 0:
+                with contextlib.suppress(OSError):
+                    os.remove(stream_path)
+                raise HTTPException(500, f"ffmpeg не смог декодировать: {conv.stderr.decode(errors='replace')[-200:]}")
     else:
         stream_path = abs_path
+    # пред-декодируем следующий трек в фоне (мгновенный next)
+    if idx + 1 < len(tracks):
+        _predecode(aid, idx + 1, os.path.join(save_path, tracks[idx + 1]["path"]))
 
     duration, title, artist, album, fmt = _read_meta(abs_path)
     resp = _ts_cmd({

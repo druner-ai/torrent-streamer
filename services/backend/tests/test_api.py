@@ -391,8 +391,8 @@ def test_play_flac_converts_via_ffmpeg(tmp_path):
         assert r.json()["file"] == "01.flac"
         run.assert_called_once_with(
             ["ffmpeg", "-y", "-i", "/downloads/01.flac", "-f", "wav",
-             f"/tmp/oaat_stream_{aid}.wav"], check=False, capture_output=True)
-        assert ts.call_args.args[0]["path"] == f"/tmp/oaat_stream_{aid}.wav"
+             f"/tmp/oaat_stream_{aid}_0.wav"], check=False, capture_output=True)
+        assert ts.call_args.args[0]["path"] == f"/tmp/oaat_stream_{aid}_0.wav"
     _reset_oaat_state()
 
 
