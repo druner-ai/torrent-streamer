@@ -341,7 +341,7 @@ def _schema(c):
         seeders INTEGER, leechers INTEGER, crawled_at INTEGER)""")
     for col in ("lossless INTEGER", "year TEXT", "artist TEXT", "album TEXT",
                 "format TEXT", "bitrate TEXT", "release_key TEXT", "cover_url TEXT",
-                "genre TEXT"):
+                "genre TEXT", "source TEXT", "rip TEXT", "quality TEXT"):
         with contextlib.suppress(sqlite3.OperationalError):
             c.execute(f"ALTER TABLE catalog ADD COLUMN {col}")
     with contextlib.suppress(sqlite3.OperationalError):
@@ -402,29 +402,86 @@ def _release_key(artist, name):
     return f"{(artist or '').strip().lower()}|{key}"
 
 
+def _quality(fmt: str | None, bitrate: str | None) -> str | None:
+    """Категория качества записи: dsd | hires | cd | lossy."""
+    f = (fmt or "").upper()
+    b = (bitrate or "").upper()
+    if f in ("DSD", "DSF", "DFF", "SACD", "SACD-R", "ISO"):
+        return "dsd"
+    if f in ("MP3", "AAC", "OGG", "OPUS"):
+        return "lossy"
+    if f:  # lossless: FLAC/APE/WavPack/ALAC/WAV
+        if b.startswith("DSD"):
+            return "dsd"
+        if b.startswith("24") or any(x in b for x in ("96", "192", "176", "88")):
+            return "hires"
+        return "cd"
+    return None
+
+
 def _parse_torrent_title(title: str) -> dict:
     """RuTracker «(жанры) [медиа] Исполнитель - Альбом (год) - год, FLAC (tracks+.cue), lossless»
-    → {artist, album, year, format, bitrate, lossless, genre, media}."""
+    → {artist, album, year, format, bitrate, lossless, genre, source, rip, quality}."""
     t = (title or "").replace("<wbr>", "")
     genre = media = None
+    # префиксные [теги] в самом начале: [TR24] [OF] [CD] [WEB] [SACD-R] [Vinyl] ...
+    mpre = re.match(r"^\s*((?:\[[^\]]+\]\s*)+)", t)
+    if mpre:
+        media = " ".join(re.findall(r"\[([^\]]+)\]", mpre.group(1)))
+        t = t[mpre.end():].lstrip()
+    # (жанры) в начале, после них может быть ещё [медиа]
     rest = t
-    m = re.match(r"^\s*\(([^)]*)\)\s*(?:\[([^\]]+)\])?\s*(.*)$", t, re.DOTALL)
+    m = re.match(r"^\s*\(([^)]*)\)\s*(\[[^\]]+\])?\s*(.*)$", t, re.DOTALL)
     if m and m.group(1) and re.search(r"[a-zа-яё]", m.group(1), re.IGNORECASE):
         genre = m.group(1).strip()
-        media = (m.group(2) or "").strip() or None
+        if not media and m.group(2):
+            media = m.group(2).strip("[] ").strip()
         rest = m.group(3).strip()
     fmt = bitrate = None
-    fm = re.search(r",\s*((?:FLAC|WavPack|WAVPack|APE|ALAC|MP3|AAC|OGG|Opus|WAV|DSD|DSF|DFF|SACD-R?|ISO|DTS|Dolby)[^,]*?)(?:,\s*(?:lossless|lossy))?\s*$",
+    fm = re.search(r",\s*((?:FLAC|WavPack|WAVPack|APE|ALAC|MP3|AAC|OGG|Opus|WAV|DSD|DSF|DFF|SACD-R?|ISO|DTS|Dolby)\b.*)$",
                    rest, re.IGNORECASE)
     if fm:
         spec = fm.group(1)
         fm2 = re.match(r"(FLAC|WavPack|WAVPack|APE|ALAC|MP3|AAC|OGG|Opus|WAV|DSD|DSF|DFF|SACD|ISO|DTS)", spec, re.IGNORECASE)
         fmt = fm2.group(1) if fm2 else None
-        bm = re.search(r"(24\s*/\s*(?:192|96|88\.2|88)|16\s*/\s*44\.1|16\s*/\s*44|DSD\s*(?:64|128|256)|\b(?:320|256|192|128)\s*kbps?)",
+        bm = re.search(r"(24\s*/?\s*(?:192|96|88\.2|88|176\.4|176)|16\s*/?\s*44\.1|16\s*/?\s*44|DSD\s*(?:64|128|256)|\b(?:320|256|192|128)\s*kbps?)",
                        spec, re.IGNORECASE)
         if bm:
             bitrate = re.sub(r"\s+", "", bm.group(1))
         rest = rest[:fm.start()].rstrip(" ,;")
+    # источник/носитель — из [медиа] + маркеры в тексте
+    source = None
+    med = (media or "").upper()
+    if "SACD" in med:
+        source = "SACD"
+    elif "DVD" in med:
+        source = "DVD-A"
+    elif "BLU" in med:
+        source = "Blu-ray"
+    elif "VINYL" in med:
+        source = "Vinyl"
+    elif "CD" in med:
+        source = "CD"
+    elif "WEB" in med:
+        source = "WEB"
+    elif "TR24" in med:
+        source = "WEB"  # TR24 = цифровой Hi-Res релиз
+    tl = t.lower()
+    if not source:
+        if "digital release" in tl or "web release" in tl:
+            source = "WEB"
+        elif "vinyl" in tl:
+            source = "Vinyl"
+        elif "sacd" in tl:
+            source = "SACD"
+        elif " cd" in tl or tl.startswith("cd ") or "[cd" in tl:
+            source = "CD"
+    # тип раздачи: image (цельный образ) vs tracks (по трекам)
+    rip = None
+    if re.search(r"\(image", t, re.IGNORECASE):
+        rip = "image"
+    elif re.search(r"\(tracks", t, re.IGNORECASE) or "по-треково" in tl:
+        rip = "tracks"
     artist = album = None
     am = re.split(r"\s+[-–—]\s+", rest, maxsplit=1)
     if len(am) == 2:
@@ -447,8 +504,14 @@ def _parse_torrent_title(title: str) -> dict:
     a = re.sub(r"\s*[-–—]\s*(?:19|20)\d{2}\s*$", "", a)
     album = re.sub(r"\s+", " ", a).strip(" -–—") or None
     lossless = 0 if fmt and fmt.upper() in ("MP3", "AAC", "OGG", "OPUS") else (1 if fmt else None)
+    quality = _quality(fmt, bitrate)
+    if "TR24" in med and quality in (None, "cd"):
+        quality = "hires"
+    if source == "SACD" and quality is None:
+        quality = "dsd"
     return {"artist": artist, "album": album, "year": year, "format": fmt,
-            "bitrate": bitrate, "lossless": lossless, "genre": genre, "media": media}
+            "bitrate": bitrate, "lossless": lossless, "genre": genre,
+            "source": source, "rip": rip, "quality": quality}
 
 
 def enrich_album(name: str) -> dict | None:
@@ -692,10 +755,27 @@ def settings_test():
             "error": "" if has_session else "логин не прошёл (нет сессии bb_session)"}
 
 
+def _split_genres(genre: str | None) -> list[str]:
+    """«Hard Bop, Post-Bop / Fusion» → ['Hard Bop', 'Post-Bop', 'Fusion'] (без дублей)."""
+    if not genre:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in re.split(r"[,/|]", genre):
+        p = p.strip()
+        k = p.lower()
+        if p and k not in seen:
+            seen.add(k)
+            out.append(p)
+    return out
+
+
 @app.get("/api/catalog/groups")
 def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
                    min_seeders: int = 0, lossless: bool | None = None, q: str | None = None,
-                   genre: str | None = None, sort: str = "seeders"):
+                   genre: str | None = None, format: str | None = None,
+                   source: str | None = None, rip: str | None = None,
+                   quality: str | None = None, sort: str = "seeders"):
     """раздачи, сгруппированные по релизу (release_key) → выбор качества (издания)."""
     sql = "SELECT * FROM catalog WHERE 1=1"
     params: list = []
@@ -708,15 +788,39 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
     if lossless is not None:
         sql += " AND lossless=?"
         params.append(1 if lossless else 0)
-    if genre:
-        sql += " AND genre LIKE ?"
-        params.append(f"%{genre}%")
+    if format:
+        sql += " AND format=?"
+        params.append(format)
+    if source:
+        sql += " AND source=?"
+        params.append(source)
+    if rip:
+        sql += " AND rip=?"
+        params.append(rip)
+    if quality:
+        sql += " AND quality=?"
+        params.append(quality)
     if q:
         sql += " AND (title LIKE ? OR artist LIKE ? OR album LIKE ?)"
         like = f"%{q}%"
         params += [like, like, like]
     with db() as c:
         rows = c.execute(sql, params).fetchall()
+    # facets — счётчики для чипов фильтров (по отфильтрованным строкам)
+    genres_ct: dict[str, int] = {}
+    formats_ct: dict[str, int] = {}
+    sources_ct: dict[str, int] = {}
+    for r in rows:
+        for g in _split_genres(r["genre"]):
+            genres_ct[g] = genres_ct.get(g, 0) + 1
+        if r["format"]:
+            formats_ct[r["format"]] = formats_ct.get(r["format"], 0) + 1
+        if r["source"]:
+            sources_ct[r["source"]] = sources_ct.get(r["source"], 0) + 1
+    # genre-фильтр применяем ПОСЛЕ facets, чтобы чипы жанров не схлопывались
+    if genre:
+        gl = genre.lower()
+        rows = [r for r in rows if gl in (r["genre"] or "").lower()]
     groups: dict[str, dict] = {}
     for r in rows:
         rk = r["release_key"] or _release_key(r["artist"], r["title"])
@@ -732,6 +836,7 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
         g["editions"].append({
             "t": r["t"], "title": r["title"], "format": r["format"],
             "bitrate": r["bitrate"], "lossless": r["lossless"],
+            "quality": r["quality"], "source": r["source"], "rip": r["rip"],
             "seeders": r["seeders"], "leechers": r["leechers"],
             "size": r["size"], "year": r["year"], "last_post": r["last_post"] or 0})
     if sort == "new":
@@ -751,7 +856,15 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
         g["editions"].sort(key=lambda e: -e["seeders"])
         g["count"] = len(g["editions"])
         g["in_library"] = g["release_key"] in lib
-    return {"groups": out, "count": len(out)}
+    facets = {
+        "genres": [{"name": k, "count": v} for k, v in
+                   sorted(genres_ct.items(), key=lambda x: -x[1])[:30]],
+        "formats": [{"name": k, "count": v} for k, v in
+                    sorted(formats_ct.items(), key=lambda x: -x[1])],
+        "sources": [{"name": k, "count": v} for k, v in
+                    sorted(sources_ct.items(), key=lambda x: -x[1])],
+    }
+    return {"groups": out, "count": len(out), "facets": facets}
 
 
 # ---------- фоновое обновление каталога ----------
@@ -768,19 +881,21 @@ def _save_crawled(crawled: list[dict]) -> int:
             rk = _release_key(p["artist"], p["album"])
             c.execute(
                 """INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
-                                       lossless,year,artist,album,format,bitrate,release_key,genre,last_post)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                       lossless,year,artist,album,format,bitrate,release_key,
+                                       genre,source,rip,quality,last_post)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(t) DO UPDATE SET seeders=excluded.seeders,
                        leechers=excluded.leechers, lossless=excluded.lossless,
                        year=excluded.year, crawled_at=excluded.crawled_at,
                        artist=excluded.artist, album=excluded.album,
                        format=excluded.format, bitrate=excluded.bitrate,
                        release_key=excluded.release_key, genre=excluded.genre,
+                       source=excluded.source, rip=excluded.rip, quality=excluded.quality,
                        last_post=excluded.last_post""",
                 (r["t"], r["forum_id"], r["title"], r["size"], r["seeders"],
                  r["leechers"], now, p["lossless"], p["year"], p["artist"],
                  p["album"], p["format"], p["bitrate"], rk, p["genre"],
-                 r["last_post"]),
+                 p["source"], p["rip"], p["quality"], r["last_post"]),
             )
         c.commit()
     return len(crawled)

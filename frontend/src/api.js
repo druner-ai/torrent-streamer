@@ -43,6 +43,10 @@ export const api = {
     if (params.lossless != null) qs.set('lossless', params.lossless ? 'true' : 'false')
     if (params.q) qs.set('q', params.q)
     if (params.genre) qs.set('genre', params.genre)
+    if (params.format) qs.set('format', params.format)
+    if (params.source) qs.set('source', params.source)
+    if (params.rip) qs.set('rip', params.rip)
+    if (params.quality) qs.set('quality', params.quality)
     if (params.sort) qs.set('sort', params.sort)
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
     return request(`/api/catalog/groups${suffix}`)

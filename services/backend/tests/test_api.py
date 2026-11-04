@@ -756,3 +756,48 @@ def test_ep_addr_caches_mdns_result():
         b = main._ep_addr("MacBook")  # второй вызов из TTL-кэша, mDNS не зовётся
         assert a == b == "192.168.31.215:9740"
         assert mdns.call_count == 1
+
+
+# --- теги RuTracker: source / rip / quality ---
+
+def test_parse_torrent_title_source_rip_quality():
+    p = main._parse_torrent_title(
+        "(Post-Bop, Hard Bop) [CD] McCoy Tyner - Expansions - 1968, FLAC (tracks+.cue), lossless")
+    assert p["genre"] == "Post-Bop, Hard Bop"
+    assert p["source"] == "CD"
+    assert p["rip"] == "tracks"
+    assert p["format"] == "FLAC"
+    assert p["quality"] == "cd"
+    assert p["lossless"] == 1
+
+
+def test_parse_torrent_title_image_web_hires():
+    p = main._parse_torrent_title(
+        "(Smooth Jazz) [WEB] Diana Krall - Candlelit Evening - 2010, FLAC (image+.cue), lossless")
+    assert p["source"] == "WEB"
+    assert p["rip"] == "image"
+
+    p = main._parse_torrent_title(
+        "[TR24][OF] Massimo Farao Quintet - Lonely One - 2026 (Mainstream Jazz)")
+    assert p["source"] == "WEB"
+    assert p["quality"] == "hires"
+
+
+def test_parse_torrent_title_sacd_mp3():
+    p = main._parse_torrent_title(
+        "[SACD-R][OF] The Square - Sports - 1986 (Jazz Fusion)")
+    assert p["source"] == "SACD"
+    assert p["quality"] == "dsd"
+
+    p = main._parse_torrent_title(
+        "(Jazz) Nina Simone - Atlantic Jazz Legends - 2026, MP3, 320 kbps")
+    assert p["format"] == "MP3"
+    assert p["quality"] == "lossy"
+    assert p["lossless"] == 0
+
+
+def test_split_genres():
+    assert main._split_genres("Hard Bop, Post-Bop / Fusion") == \
+        ["Hard Bop", "Post-Bop", "Fusion"]
+    assert main._split_genres("Jazz, jazz, Bop") == ["Jazz", "Bop"]
+    assert main._split_genres(None) == []

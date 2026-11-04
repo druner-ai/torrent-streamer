@@ -36,6 +36,12 @@ export default function Tracker({ notify, onAlbumAdded }) {
   const [sortMode, setSortMode] = useState('seeders')
   const [minSeeders, setMinSeeders] = useState(0)
   const [losslessOnly, setLosslessOnly] = useState(false)
+  const [quality, setQuality] = useState('')
+  const [format, setFormat] = useState('')
+  const [rip, setRip] = useState('')
+  const [source, setSource] = useState('')
+  const [genre, setGenre] = useState('')
+  const [facets, setFacets] = useState({ genres: [], formats: [], sources: [] })
   const [qInput, setQInput] = useState('')
   const [q, setQ] = useState('')
   const [groups, setGroups] = useState([])
@@ -117,12 +123,18 @@ export default function Tracker({ notify, onAlbumAdded }) {
         min_seeders: minSeeders || undefined,
         lossless: losslessOnly ? true : undefined,
         q: q || undefined,
+        format: format || undefined,
+        source: source || undefined,
+        rip: rip || undefined,
+        quality: quality || undefined,
+        genre: genre || undefined,
         sort: sortMode !== 'seeders' ? sortMode : undefined,
       })
       .then((data) => {
         if (!alive) return
         setGroups(data.groups || [])
         setCount(data.count ?? (data.groups || []).length)
+        setFacets(data.facets || { genres: [], formats: [], sources: [] })
       })
       .catch((e) => {
         if (alive) setError(e.message)
@@ -133,7 +145,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
     return () => {
       alive = false
     }
-  }, [forumIds, minSeeders, losslessOnly, q, sortMode, reloadTick])
+  }, [forumIds, minSeeders, losslessOnly, q, sortMode, reloadTick, format, source, rip, quality, genre])
 
   const activeCategory = useMemo(
     () => (catIdx != null ? visibleTree[catIdx] : null),
@@ -228,6 +240,24 @@ export default function Tracker({ notify, onAlbumAdded }) {
         : 'bg-surface-1 text-text-muted hover:bg-surface-2 hover:text-text-primary'
     }`
 
+  const filterRow = (label, options, value, onChange, useChip = chip) => (
+    <div className="no-scrollbar -mx-4 mb-2 flex items-center gap-2 overflow-x-auto px-4 pb-1">
+      <span className="shrink-0 text-[10.5px] font-semibold uppercase tracking-wider text-text-muted">
+        {label}
+      </span>
+      {options.map(([v, lbl]) => (
+        <button
+          key={v || '_all'}
+          type="button"
+          onClick={() => onChange(v)}
+          className={useChip(value === v)}
+        >
+          {lbl}
+        </button>
+      ))}
+    </div>
+  )
+
   return (
     <div className="mx-auto max-w-[1400px] px-4 py-8 md:px-6">
       <div className="mb-7 flex items-center gap-3">
@@ -298,6 +328,13 @@ export default function Tracker({ notify, onAlbumAdded }) {
           ))}
         </div>
       )}
+
+      {/* фильтры по тегам названия */}
+      {filterRow('Качество', [['', 'Все'], ['hires', 'Hi-Res 24/96+'], ['cd', 'CD 16/44'], ['dsd', 'DSD/SACD'], ['lossy', 'MP3']], quality, setQuality)}
+      {filterRow('Кодек', [['', 'Все'], ...facets.formats.map((f) => [f.name, f.name])], format, setFormat, subChip)}
+      {filterRow('Раздача', [['', 'Все'], ['tracks', 'tracks'], ['image', 'image']], rip, setRip, subChip)}
+      {filterRow('Источник', [['', 'Все'], ...facets.sources.map((s) => [s.name, s.name])], source, setSource, subChip)}
+      {facets.genres.length > 0 && filterRow('Жанр', [['', 'Все'], ...facets.genres.map((g) => [g.name, g.name])], genre, setGenre, subChip)}
 
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <div className="flex h-9 flex-1 items-center gap-2 rounded-sm border border-transparent bg-surface-inset px-3 focus-within:border-strong md:max-w-[360px]">
