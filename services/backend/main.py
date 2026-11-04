@@ -422,13 +422,16 @@ def album_files(aid: int):
         genre = t["genre"]
         # лениво читаем метаданные из скачанного файла и кэшируем
         if ready and save_path and (title is None or duration is None or fmt is None
-                                    or year is None or genre is None):
+                                    or year is None or genre is None or not a["artist"]):
             abs_path = os.path.join(save_path, t["path"])
-            dur, tl, _, _, fmeta = _read_meta(abs_path)
+            dur, tl, art, _, fmeta = _read_meta(abs_path)
             if dur is not None:
                 duration = dur
             if tl:
                 title = tl
+            if art and not a["artist"]:
+                c.execute("UPDATE albums SET artist=? WHERE id=?", (art, aid))
+                a = c.execute("SELECT * FROM albums WHERE id=?", (aid,)).fetchone()
             if fmeta:
                 fmt = fmeta
             yr, gn = _read_year_genre(abs_path)
