@@ -90,8 +90,10 @@ def search(q: str, limit: int = 10):
 
 # ---------- БД ----------
 def db():
-    c = sqlite3.connect(DB_PATH)
+    c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
+    c.execute("PRAGMA busy_timeout=30000")
+    c.execute("PRAGMA journal_mode=WAL")
     c.execute("""CREATE TABLE IF NOT EXISTS albums(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         hash TEXT UNIQUE, name TEXT, status TEXT, added_at INTEGER,
