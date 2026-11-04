@@ -3,6 +3,7 @@ torrent-streamer backend — связывает qbittorrent (download) + MPD (pl
 Вход: magnet/ссылка → альбом с треками → play в MPD → управление.
 """
 import contextlib
+import html
 import json
 import os
 import re
@@ -241,15 +242,21 @@ def _parse_forum_page(html: str) -> list[dict]:
     for tr in re.split(r"<tr", html)[1:]:
         if "dl-stub" not in tr:
             continue
-        m = re.search(r'title="([^"]+)"[^>]*href="viewtopic\.php\?t=(\d+)"', tr)
-        if not m:
-            continue
+        m = re.search(r'id="tt-(\d+)"[^>]*>(.*?)</a>', tr)
+        if m:
+            tid, title_raw = int(m.group(1)), m.group(2)
+        else:  # fallback: id темы в data-topic_id, название в ссылке tt-text
+            d = re.search(r'data-topic_id="(\d+)"', tr)
+            t = re.search(r'class="[^"]*tt-text[^"]*"[^>]*>(.*?)</a>', tr)
+            if not (d and t):
+                continue
+            tid, title_raw = int(d.group(1)), t.group(1)
         s = re.search(r'class="seedmed"[^>]*><b>(\d+)</b>', tr)
         l = re.search(r'class="leechmed"[^>]*><b>(\d+)</b>', tr)
         sz = re.search(r'class="[^"]*dl-stub[^"]*">([^<]+)</a>', tr)
         rows.append({
-            "t": int(m.group(2)),
-            "title": html.unescape(m.group(1)).strip(),
+            "t": tid,
+            "title": re.sub(r"\s+", " ", html.unescape(title_raw)).strip(),
             "seeders": int(s.group(1)) if s else 0,
             "leechers": int(l.group(1)) if l else 0,
             "size": (sz.group(1) or "").replace("&nbsp;", " ").strip() if sz else "",
