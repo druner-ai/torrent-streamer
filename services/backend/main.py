@@ -54,11 +54,17 @@ OAAT_ENDPOINTS = _parse_endpoints(os.getenv("OAAT_ENDPOINTS", ""))
 if not OAAT_ENDPOINTS:
     OAAT_ENDPOINTS = {"MacBook": OAAT_TARGET}
 ACTIVE_EP_FILE = os.getenv("ACTIVE_EP_FILE", "/data/active_endpoint")
+OAAT_CONTROL_TOKEN = os.getenv("OAAT_CONTROL_TOKEN", "")
 
 
 def _ep_web(name: str) -> str:
     """Web UI OAAT-эндпоинта (control 9740 + 1) — список/смена аудио-устройства."""
     return "http://" + OAAT_ENDPOINTS[name].rsplit(":", 1)[0] + ":9741"
+
+
+def _ep_headers() -> dict:
+    """Bearer-токен для управляющих POST на OAAT web UI (если задан control_token)."""
+    return {"Authorization": f"Bearer {OAAT_CONTROL_TOKEN}"} if OAAT_CONTROL_TOKEN else {}
 
 
 def _active_ep_name() -> str:
@@ -1236,17 +1242,26 @@ class EndpointSelectReq(BaseModel):
 
 def _ep_status(name: str) -> dict:
     """Статус конкретного endpoint'а (устройства + играет ли)."""
+    web = _ep_web(name)
     try:
-        r = requests.get(f"{_ep_web(name)}/api/status", timeout=3)
+        r = requests.get(f"{web}/api/status", timeout=3)
         r.raise_for_status()
         d = r.json()
-        return {"available_devices": d.get("available_devices", []),
-                "current_device": d.get("current_device"),
-                "connected": d.get("connected", False),
-                "playing": d.get("playing", False)}
+        result = {"current_device": d.get("current_device"),
+                  "connected": d.get("connected", False),
+                  "playing": d.get("playing", False)}
     except requests.RequestException:
         return {"available_devices": [], "current_device": None,
                 "connected": False, "playing": False, "error": "недоступен"}
+    # Живой список устройств (/api/devices перечисляет на лету). На старых
+    # endpoint'ах без этого эндпоинта — fallback на /api/status available_devices.
+    try:
+        rd = requests.get(f"{web}/api/devices", timeout=3)
+        rd.raise_for_status()
+        result["available_devices"] = rd.json().get("devices", [])
+    except requests.RequestException:
+        result["available_devices"] = d.get("available_devices", [])
+    return result
 
 
 @app.get("/api/endpoints")
@@ -1272,7 +1287,7 @@ def endpoints_select(req: EndpointSelectReq):
     if req.device:
         try:
             r = requests.post(f"{_ep_web(_active_ep_name())}/api/device",
-                              json={"device": req.device}, timeout=5)
+                              json={"device": req.device}, headers=_ep_headers(), timeout=5)
             r.raise_for_status()
         except requests.RequestException as e:
             return JSONResponse({"detail": f"endpoint недоступен: {e}"}, status_code=502)
