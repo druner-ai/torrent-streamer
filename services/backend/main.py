@@ -865,6 +865,21 @@ def catalog_reimport():
 
 # ---------- дерево трекера (полный список форумов RuTracker) ----------
 DEFAULT_ENABLED = {f for v in FORUM_CATALOG.values() for f, _ in v["forums"]}
+# категории, где группы имеют жанровые подфорумы (краулим вторым уровнем)
+MUSIC_CATEGORIES = {"Музыка", "Джазовая и Блюзовая музыка", "Рок-музыка",
+                    "Электронная музыка", "Популярная музыка",
+                    "Hi-Res форматы, оцифровки"}
+
+
+def _parse_group_subforums(page: str) -> list[tuple[int, str]]:
+    """подфорумы группы со страницы viewforum.php?f=N (h4.forumlink → viewforum)."""
+    out = []
+    for fid, t in re.findall(r'<h4 class="forumlink"><a href="viewforum\.php\?f=(\d+)">([^<]+)</a>', page):
+        fid = int(fid)
+        t = html.unescape(re.sub(r"\s+", " ", t)).strip()
+        if t and (fid, t) not in out:
+            out.append((fid, t))
+    return out
 
 
 def _parse_index_tree(page: str) -> list[dict]:
@@ -895,7 +910,7 @@ class TreeSaveReq(BaseModel):
 
 @app.post("/api/catalog/tree/refresh")
 def catalog_tree_refresh():
-    """краулит index.php → полное дерево форумов → таблица forums."""
+    """краулит index.php + страницы музыкальных групп → полное дерево форумов."""
     html = _flaresolverr_get(f"{RUTRACKER_BASE}/index.php")
     tree = _parse_index_tree(html)
     if not tree:
@@ -910,15 +925,29 @@ def catalog_tree_refresh():
                                 parent_id=excluded.parent_id, category=excluded.category""",
                           (f["id"], f["title"], 0, cat["category"],
                            1 if (empty and f["id"] in DEFAULT_ENABLED) else 0))
-                for s in f["subforums"]:
+        c.commit()
+    # второй уровень: жанровые подфорумы музыкальных групп (viewforum.php?f=группа)
+    n_groups = 0
+    for cat in tree:
+        if cat["category"] not in MUSIC_CATEGORIES:
+            continue
+        for f in cat["forums"]:
+            n_groups += 1
+            try:
+                sub_page = _flaresolverr_get(f"{RUTRACKER_BASE}/viewforum.php?f={f['id']}")
+            except requests.RequestException:
+                continue
+            subs = _parse_group_subforums(sub_page)
+            with db() as c:
+                for sid, stitle in subs:
                     c.execute("""INSERT INTO forums(forum_id,title,parent_id,category,enabled)
                                  VALUES(?,?,?,?,?)
                                  ON CONFLICT(forum_id) DO UPDATE SET title=excluded.title,
                                     parent_id=excluded.parent_id, category=excluded.category""",
-                              (s["id"], s["title"], f["id"], cat["category"],
-                               1 if (empty and s["id"] in DEFAULT_ENABLED) else 0))
-        c.commit()
-    return {"ok": True, "categories": len(tree)}
+                              (sid, stitle, f["id"], cat["category"],
+                               1 if (empty and sid in DEFAULT_ENABLED) else 0))
+                c.commit()
+    return {"ok": True, "categories": len(tree), "groups": n_groups}
 
 
 @app.get("/api/catalog/tree")

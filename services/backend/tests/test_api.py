@@ -628,6 +628,16 @@ def test_parse_index_tree():
     assert cat["forums"][1]["subforums"] == []
 
 
+def test_parse_group_subforums():
+    page = (
+        '<h4 class="forumlink"><a href="viewforum.php?f=2277">Early Jazz, Swing (lossless)</a></h4>'
+        '<h4 class="forumlink"><a href="viewforum.php?f=2278">Bop (lossless)</a></h4>'
+        '<a href="viewforum.php?f=2267">Зарубежный джаз</a>'  # хлебная крошка — не h4
+    )
+    subs = main._parse_group_subforums(page)
+    assert subs == [(2277, "Early Jazz, Swing (lossless)"), (2278, "Bop (lossless)")]
+
+
 def test_parse_forum_page_last_post():
     page = (
         '<tr id="tr-1" data-topic_id="1"><td>'
