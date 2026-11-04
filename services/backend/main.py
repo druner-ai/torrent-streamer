@@ -105,7 +105,7 @@ def _schema(c):
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         hash TEXT UNIQUE, name TEXT, status TEXT, added_at INTEGER,
         artist TEXT, cover_url TEXT)""")
-    for col in ("artist", "cover_url"):
+    for col in ("artist", "cover_url", "release_key"):
         with contextlib.suppress(sqlite3.OperationalError):
             c.execute(f"ALTER TABLE albums ADD COLUMN {col} TEXT")
     c.execute("""CREATE TABLE IF NOT EXISTS tracks(
@@ -136,6 +136,15 @@ def db():
 
 
 # ---------- MusicBrainz ----------
+def _release_key(artist, name):
+    """нормализованный ключ релиза: «исполнитель | название» без тегов/года/скобок."""
+    key = re.sub(r"\[[^\]]*\]", " ", name or "")
+    key = re.sub(r"\b(19|20)\d{2}\b", " ", key)
+    key = re.sub(r"\([^)]*\)", " ", key)
+    key = re.sub(r"\s+", " ", key).strip().lower()
+    return f"{(artist or '').strip().lower()}|{key}"
+
+
 def enrich_album(name: str) -> dict | None:
     try:
         r = requests.get(
@@ -299,8 +308,9 @@ def add(req: AddReq):
         artist = meta.get("artist") if meta else None
         cover_url = meta.get("cover_url") if meta else None
         cur = c.execute(
-            "INSERT INTO albums(hash,name,status,added_at,artist,cover_url) VALUES(?,?,?,?,?,?)",
-            (h, info["name"], "downloading", int(time.time()), artist, cover_url),
+            "INSERT INTO albums(hash,name,status,added_at,artist,cover_url,release_key) VALUES(?,?,?,?,?,?,?)",
+            (h, info["name"], "downloading", int(time.time()), artist, cover_url,
+             _release_key(artist, info["name"])),
         )
         aid = cur.lastrowid
         for f in audio:
@@ -352,15 +362,18 @@ def albums():
         info = qb.find_by_hash(r["hash"])
         status = _torrent_state(info["state"]) if info else (r["status"] or "downloading")
         progress = info["progress"] if info else 0
-        year = genre = None
-        for t in c.execute("""SELECT year, genre FROM tracks
-                              WHERE album_id=? AND (year IS NOT NULL OR genre IS NOT NULL)
+        year = genre = fmt = None
+        for t in c.execute("""SELECT year, genre, format FROM tracks
+                              WHERE album_id=? AND (year IS NOT NULL OR genre IS NOT NULL
+                                                    OR format IS NOT NULL)
                               LIMIT 1""", (r["id"],)):
-            year, genre = t["year"], t["genre"]
+            year, genre, fmt = t["year"], t["genre"], t["format"]
+        release_key = r["release_key"] or _release_key(r["artist"], r["name"])
         out.append({"id": r["id"], "hash": r["hash"], "name": r["name"],
                     "status": status, "progress": round(progress * 100, 1),
                     "tracks": r["n"], "artist": r["artist"], "cover_url": r["cover_url"],
-                    "year": year, "genre": genre, "favorite": r["id"] in favs})
+                    "year": year, "genre": genre, "format": fmt,
+                    "release_key": release_key, "favorite": r["id"] in favs})
     return out
 
 @app.post("/api/albums/{aid}/favorite")

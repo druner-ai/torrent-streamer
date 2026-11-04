@@ -34,6 +34,12 @@
   .crumbs { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
   .crumbs .chip { cursor:pointer; }
   .crumb-name { font-weight:600; }
+  .badge.fmt { top:auto; bottom:8px; right:8px; color:#c9a86b; }
+  .artist.fmt { color:#c9a86b; }
+  .ed-row { display:flex; align-items:center; gap:12px; padding:12px 14px; margin-bottom:8px; background:#1c2027; border:1px solid #2c313a; border-radius:10px; cursor:pointer; }
+  .ed-row:hover { background:#23262d; }
+  .ed-row .nm { font-weight:600; }
+  .ed-row .artist { flex:1; color:#8b93a1; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #search-results { margin-bottom:16px; }
   .result { border:1px solid #23262d; border-radius:10px; padding:12px 16px; margin-bottom:10px; background:#161a20; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
   .result .title { font-weight:600; }
@@ -198,6 +204,14 @@
   </div>
 </div>
 
+<div id="ed-modal" class="modal" hidden>
+  <div class="modal-card" style="max-width:420px">
+    <button class="close" onclick="closeEditions()">✕</button>
+    <h3 style="margin:0 0 12px">Издания</h3>
+    <div id="ed-list"></div>
+  </div>
+</div>
+
 <div id="mini" onclick="switchTab('player')">
   <div class="m-bar"><div id="m-fill"></div></div>
   <img class="cover" id="m-cover" alt="" style="display:none">
@@ -310,15 +324,21 @@ function filtered() {
   if (activeGenre) list = list.filter(a => a.genre === activeGenre);
   return list;
 }
-function cardHtml(a) {
+function releaseHtml(editions) {
+  const a = editions[0];
+  const multi = editions.length > 1;
+  const onclick = multi ? `openEditions(${a.id})` : `openAlbum(${a.id})`;
+  const fmts = [...new Set(editions.map(e => e.format).filter(Boolean))].join(' · ');
   return `
-    <div class="card" onclick="openAlbum(${a.id})">
+    <div class="card" onclick="${onclick}">
       <div class="cover-wrap">
         <img class="cover" src="/api/albums/${a.id}/cover" alt="" onerror="this.src='${COVER_PLACEHOLDER}'">
         <span class="badge ${a.status}">${albumBadge(a)}</span>
+        ${multi ? '<span class="badge fmt">' + editions.length + ' издания</span>' : ''}
       </div>
       <div class="nm">${esc(a.name)}</div>
       ${a.artist ? `<div class="artist">${esc(a.artist)}${a.year ? ' · ' + esc(a.year) : ''}</div>` : ''}
+      ${fmts ? `<div class="artist fmt">${esc(fmts)}</div>` : ''}
     </div>`;
 }
 function renderCatalog() {
@@ -359,13 +379,35 @@ function renderArtistAlbums(box) {
   const sort = document.getElementById('sort').value;
   if (sort === 'year_desc') list.sort((a, b) => (+b.year || 0) - (+a.year || 0));
   else if (sort === 'year_asc') list.sort((a, b) => (+a.year || 0) - (+b.year || 0));
+  // группируем издания одного релиза по release_key
+  const groups = {};
+  const order = [];
+  for (const a of list) {
+    const k = a.release_key || ((a.artist || '') + '|' + a.name);
+    if (!groups[k]) { groups[k] = []; order.push(k); }
+    groups[k].push(a);
+  }
   box.innerHTML = `
     <div class="crumbs">
       <button class="chip" onclick="backToArtists()">← Исполнители</button>
       <span class="crumb-name">${esc(activeArtist)}</span>
     </div>
-    <div class="grid">${list.map(cardHtml).join('')}</div>`;
+    <div class="grid">${order.map(k => releaseHtml(groups[k])).join('')}</div>`;
 }
+function openEditions(aid) {
+  const a = albumsCache.find(x => x.id === aid);
+  if (!a) return;
+  const k = a.release_key || ((a.artist || '') + '|' + a.name);
+  const editions = albumsCache.filter(x => (x.release_key || ((x.artist || '') + '|' + x.name)) === k);
+  document.getElementById('ed-list').innerHTML = editions.map(e => `
+    <div class="ed-row" onclick="openAlbum(${e.id}); closeEditions();">
+      <div class="nm">${esc(e.format || 'формат?')}</div>
+      <div class="artist">${esc(e.name)}</div>
+      <span class="badge ${e.status}" style="position:static">${albumBadge(e)}</span>
+    </div>`).join('');
+  document.getElementById('ed-modal').hidden = false;
+}
+function closeEditions() { document.getElementById('ed-modal').hidden = true; }
 function renderGenres() {
   const genres = [...new Set(albumsCache.map(a => a.genre).filter(Boolean))].sort();
   const box = document.getElementById('genres');
