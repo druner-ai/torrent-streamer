@@ -402,8 +402,11 @@ def catalog_download(req: CatalogDownloadReq):
     path = f"/tmp/rt-{req.t}.torrent"
     with open(path, "wb") as f:
         f.write(r.content)
-    QB().add_file(path)
-    return {"ok": True, "t": req.t, "bytes": len(r.content)}
+    qb = QB()
+    before = {t.get("hash") for t in qb.info() if t.get("hash")}
+    qb.add_file(path)
+    imported = _import_torrent(qb, before)
+    return {"ok": True, "t": req.t, "bytes": len(r.content), **imported}
 
 
 # ---------- qbittorrent ----------
@@ -481,16 +484,13 @@ def mpd_cmd(fn):
 class AddReq(BaseModel):
     link: str
 
-@app.post("/api/add")
-def add(req: AddReq):
-    qb = QB()
-    qb.add(req.link)
-    # ждём metainfo (список файлов) до 30с
+def _import_torrent(qb: "QB", before: set) -> dict:
+    """ждёт метаданные нового торрента (hash не из `before`) и заводит альбом в библиотеку."""
     info = None
-    for _ in range(30):
+    for _ in range(60):
         time.sleep(1)
         for t in qb.info():
-            if t.get("name") and t.get("hash"):
+            if t.get("name") and t.get("hash") and t["hash"] not in before:
                 info = t
                 break
         if info:
@@ -502,7 +502,6 @@ def add(req: AddReq):
     audio = [f for f in files if Path(f["name"]).suffix.lower() in AUDIO_EXT]
     if not audio:
         raise HTTPException(400, "в раздаче нет аудиофайлов")
-    # альбом
     c = db()
     try:
         try:
@@ -523,9 +522,16 @@ def add(req: AddReq):
         c.commit()
     except sqlite3.IntegrityError:
         aid = c.execute("SELECT id FROM albums WHERE hash=?", (h,)).fetchone()["id"]
-    # приоритет: качать только аудио, по порядку
     qb.set_priority(h, {f["name"] for f in audio})
-    return JSONResponse({"album_id": aid, "hash": h, "name": info["name"], "tracks": len(audio)})
+    return {"album_id": aid, "hash": h, "name": info["name"], "tracks": len(audio)}
+
+
+@app.post("/api/add")
+def add(req: AddReq):
+    qb = QB()
+    before = {t.get("hash") for t in qb.info() if t.get("hash")}
+    qb.add(req.link)
+    return JSONResponse(_import_torrent(qb, before))
 
 def _torrent_state(state: str) -> str:
     """qbittorrent state → читаемый статус альбома."""

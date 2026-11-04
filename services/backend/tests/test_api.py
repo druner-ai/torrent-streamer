@@ -88,7 +88,7 @@ def test_health_degraded_when_mpd_fails():
 def test_add_rejects_when_no_audio_files():
     with patch.object(main, "QB") as QB:
         qb = QB.return_value
-        qb.info.return_value = [{"name": "SomeTorrent", "hash": "abc123"}]
+        qb.info.side_effect = [[], [{"name": "SomeTorrent", "hash": "abc123"}]]
         qb.files.return_value = [{"name": "readme.txt", "index": 0, "size": 10}]
         r = client.post("/api/add", json={"link": "magnet:?xt=urn:btih:abc123"})
         assert r.status_code == 400
@@ -97,7 +97,7 @@ def test_add_rejects_when_no_audio_files():
 def test_add_creates_album_for_audio_files():
     with patch.object(main, "QB") as QB:
         qb = QB.return_value
-        qb.info.return_value = [{"name": "Great Album", "hash": "abc123"}]
+        qb.info.side_effect = [[], [{"name": "Great Album", "hash": "abc123"}]]
         qb.files.return_value = [
             {"name": "01.flac", "index": 0, "size": 100},
             {"name": "02.flac", "index": 1, "size": 200},
@@ -141,7 +141,7 @@ def test_add_does_not_crash_when_enrich_fails(tmp_path):
         "main.requests.get", side_effect=requests.exceptions.ConnectionError("boom")
     ):
         qb = QB.return_value
-        qb.info.return_value = [{"name": "Great Album", "hash": "abc123"}]
+        qb.info.side_effect = [[], [{"name": "Great Album", "hash": "abc123"}]]
         qb.files.return_value = [{"name": "01.flac", "index": 0, "size": 100}]
         r = client.post("/api/add", json={"link": "magnet:?xt=urn:btih:abc123"})
         assert r.status_code == 200
@@ -158,7 +158,7 @@ def test_add_does_not_crash_when_enrich_fails(tmp_path):
 def test_delete_album_removes_album(tmp_path):
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(main, "QB") as QB:
         qb = QB.return_value
-        qb.info.return_value = [{"name": "Great Album", "hash": "abc123"}]
+        qb.info.side_effect = [[], [{"name": "Great Album", "hash": "abc123"}]]
         qb.files.return_value = [
             {"name": "01.flac", "index": 0, "size": 100},
             {"name": "02.flac", "index": 1, "size": 200},
