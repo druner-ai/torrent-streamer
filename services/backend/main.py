@@ -52,6 +52,8 @@ _OAAT_ARTIST = None
 _OAAT_COVER_URL = None
 _OAAT_VOLUME = 100
 _OAAT_FORMAT = None
+_QUEUE = []          # очередь воспроизведения: [{"aid": int, "idx": int}, ...]
+_QUEUE_POS = -1      # позиция текущего трека в очереди; -1 = очереди нет
 
 # ---------- защита API ключом (опционально) ----------
 @app.middleware("http")
@@ -297,6 +299,33 @@ def add(req: AddReq):
     qb.set_priority(h, {f["name"] for f in audio})
     return JSONResponse({"album_id": aid, "hash": h, "name": info["name"], "tracks": len(audio)})
 
+def _torrent_state(state: str) -> str:
+    """qbittorrent state → читаемый статус альбома."""
+    if state in ("uploading", "forcedUP", "stalledUP", "queuedUP",
+                 "checkingUP", "pausedUP"):
+        return "complete"          # всё скачано (раздаёт/готово)
+    if state == "stalledDL":
+        return "stalled"           # качается, но нет пиров
+    if state == "error":
+        return "error"
+    if state in ("pausedDL", "queuedDL"):
+        return "paused"
+    return "downloading"           # downloading/forcedDL/metaDL/allocating/checkingDL
+
+
+def _file_state(progress: float, torrent_state: str) -> str:
+    """per-file статус: 7 состояний из ресёрча."""
+    if progress >= 1.0:
+        return "ready"
+    if torrent_state == "error":
+        return "error"
+    if torrent_state == "stalledDL":
+        return "stalled"           # нет пиров
+    if progress > 0:
+        return "downloading"
+    return "queued"
+
+
 @app.get("/api/albums")
 def albums():
     c = db()
@@ -306,7 +335,7 @@ def albums():
     qb = QB()
     for r in rows:
         info = qb.find_by_hash(r["hash"])
-        status = info["state"] if info else r["status"]
+        status = _torrent_state(info["state"]) if info else (r["status"] or "downloading")
         progress = info["progress"] if info else 0
         out.append({"id": r["id"], "hash": r["hash"], "name": r["name"],
                     "status": status, "progress": round(progress * 100, 1),
@@ -339,11 +368,13 @@ def album_files(aid: int):
         raise HTTPException(404, "альбом не найден")
     tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
     save_path = None
+    torrent_state = None
     try:
         qb = QB()
         files = {f["name"]: f for f in qb.files(a["hash"])}
         info = qb.find_by_hash(a["hash"])
         save_path = info.get("save_path") if info else None
+        torrent_state = info.get("state") if info else None
     except Exception:  # noqa: BLE001 — торрент не найден / qbt недоступен
         files = {}
     out = []
@@ -372,6 +403,7 @@ def album_files(aid: int):
             "path": t["path"],
             "size": t["size"],
             "ready": ready,
+            "state": _file_state(progress, torrent_state),
             "progress": float(progress),
             "duration": duration,
             "format": fmt,
@@ -574,13 +606,23 @@ def _start_track(aid, idx, offset=0.0):
     return {"ok": True, "album_id": aid, "track_index": idx, "file": os.path.basename(abs_path)}
 
 
+def _build_queue(aid: int, start_idx: int):
+    """Заменить очередь альбомом, начиная с start_idx."""
+    global _QUEUE, _QUEUE_POS
+    tracks, _, _ = _current_tracks(aid)
+    _QUEUE = [{"aid": aid, "idx": i} for i in range(start_idx, len(tracks))]
+    _QUEUE_POS = 0
+
+
 @app.post("/api/albums/{aid}/play")
 def play(aid: int):
+    _build_queue(aid, 0)
     return _start_track(aid, 0)
 
 
 @app.post("/api/albums/{aid}/tracks/{idx}/play")
 def play_track(aid: int, idx: int):
+    _build_queue(aid, idx)
     return _start_track(aid, idx)
 
 
@@ -623,6 +665,7 @@ def player():
 def player_cmd(cmd: str):
     global _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_TRACK_NAME, _OAAT_TRACK_TITLE
     global _OAAT_DURATION, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL, _OAAT_FORMAT
+    global _QUEUE_POS
 
     if cmd == "stop":
         _ts_cmd({"cmd": "stop"})
@@ -650,13 +693,65 @@ def player_cmd(cmd: str):
         return {"ok": True, "cmd": cmd}
 
     if cmd in ("next", "prev"):
+        step = 1 if cmd == "next" else -1
+        if _QUEUE_POS >= 0 and _QUEUE:
+            # идём по явной очереди
+            npos = _QUEUE_POS + step
+            if not (0 <= npos < len(_QUEUE)):
+                return player_cmd("stop")  # конец очереди
+            _QUEUE_POS = npos
+            entry = _QUEUE[npos]
+            return _start_track(entry["aid"], entry["idx"])
+        # фолбэк: соседний трек текущего альбома
         if _OAAT_ALBUM_ID is None:
             raise HTTPException(400, "сначала запусти альбом")
         idx = _OAAT_TRACK_INDEX if _OAAT_TRACK_INDEX is not None else 0
-        nxt = idx + 1 if cmd == "next" else idx - 1
-        return _start_track(_OAAT_ALBUM_ID, nxt)
+        return _start_track(_OAAT_ALBUM_ID, idx + step)
 
     raise HTTPException(400, f"неизвестная команда: {cmd}")
+
+
+class QueueReq(BaseModel):
+    album_id: int
+    track_index: int
+    mode: str = "end"  # "now" (заменить и играть) | "next" | "end"
+
+
+@app.post("/api/queue")
+def queue_add(req: QueueReq):
+    if req.mode == "now":
+        return play_track(req.album_id, req.track_index)
+    if req.mode == "next":
+        _QUEUE.insert(_QUEUE_POS + 1, {"aid": req.album_id, "idx": req.track_index})
+    else:  # "end"
+        _QUEUE.append({"aid": req.album_id, "idx": req.track_index})
+    return {"ok": True, "queue_len": len(_QUEUE), "pos": _QUEUE_POS}
+
+
+@app.post("/api/queue/jump")
+def queue_jump(pos: int):
+    global _QUEUE_POS
+    if not (0 <= pos < len(_QUEUE)):
+        raise HTTPException(400, "нет такой позиции в очереди")
+    _QUEUE_POS = pos
+    entry = _QUEUE[pos]
+    return _start_track(entry["aid"], entry["idx"])
+
+
+@app.get("/api/queue")
+def queue_get():
+    out = []
+    for i, e in enumerate(_QUEUE):
+        title = f"альбом {e['aid']} #{e['idx']}"
+        with contextlib.suppress(Exception):
+            tracks, _, _ = _current_tracks(e["aid"])
+            if 0 <= e["idx"] < len(tracks):
+                t = tracks[e["idx"]]
+                title = t["title"] or _clean_track_name(t["name"])
+        out.append({"album_id": e["aid"], "track_index": e["idx"],
+                    "title": title, "current": i == _QUEUE_POS})
+    return {"queue": out, "pos": _QUEUE_POS}
+
 
 # фронт (путь относительно файла — работает и в Docker, и локально)
 STATIC_DIR = Path(__file__).parent / "static"

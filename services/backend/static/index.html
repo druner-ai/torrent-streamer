@@ -39,6 +39,9 @@
   .badge { position:absolute; top:8px; right:8px; font-size:11px; padding:2px 8px; border-radius:6px; background:rgba(15,17,21,.85); }
   .badge.downloading { color:#5fd08a; }
   .badge.complete { color:#7fb4ff; }
+  .badge.stalled { color:#e6b75f; }
+  .badge.error { color:#e06c6c; }
+  .badge.paused { color:#8b93a1; }
 
   /* Модалка альбома */
   .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:20; display:flex; align-items:center; justify-content:center; padding:20px; }
@@ -60,6 +63,9 @@
   .track.current { background:#1e2f4a; color:#fff; }
   .track .tr { color:#8b93a1; font-size:12px; white-space:nowrap; }
   .track .tr.ok { color:#5fd08a; }
+  .track .tr.stalled { color:#e6b75f; }
+  .track .tr.error { color:#e06c6c; }
+  .track .tr.queued { color:#8b93a1; }
   .track.disabled { color:#5a6270; cursor:not-allowed; }
 
   /* Полноэкранный плеер */
@@ -158,6 +164,7 @@
         <div class="meta" id="al-meta"></div>
         <div class="acts">
           <button class="play" onclick="play(openAlbumId)">▶ Играть</button>
+          <button onclick="queueAlbum(openAlbumId)">＋ В очередь</button>
           <button class="del" onclick="del(openAlbumId)">Удалить</button>
         </div>
       </div>
@@ -242,6 +249,22 @@ async function addResult(btn) {
     load();
   } catch(e) { alert('Ошибка: ' + e.message); }
 }
+function albumBadge(a) {
+  if (a.status === 'complete') return 'готово';
+  if (a.status === 'stalled') return 'нет пиров';
+  if (a.status === 'error') return 'ошибка';
+  if (a.status === 'paused') return 'пауза';
+  if (a.status === 'downloading') return (a.progress || 0) + '%';
+  return a.status || '';
+}
+function fileStatus(f) {
+  if (f.state === 'ready') return [f.duration ? fmt(f.duration) : '', f.format].filter(Boolean).join(' · ');
+  if (f.state === 'downloading') return Math.round(f.progress * 100) + '%';
+  if (f.state === 'stalled') return 'нет пиров';
+  if (f.state === 'error') return 'ошибка';
+  if (f.state === 'queued') return 'в очереди';
+  return Math.round((f.progress || 0) * 100) + '%';
+}
 async function load() {
   try {
     const albums = await api('/api/albums');
@@ -249,7 +272,7 @@ async function load() {
       <div class="card" onclick="openAlbum(${a.id})">
         <div class="cover-wrap">
           <img class="cover" src="/api/albums/${a.id}/cover" alt="" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%231c2027%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2275%22 y=%2278%22 fill=%22%235a6270%22 font-size=%2230%22 text-anchor=%22middle%22%3E♪%3C/text%3E%3C/svg%3E'">
-          <span class="badge ${a.status}">${a.status === 'complete' ? 'готово' : a.progress + '%'}</span>
+          <span class="badge ${a.status}">${albumBadge(a)}</span>
         </div>
         <div class="nm">${esc(a.name)}</div>
         ${a.artist ? `<div class="artist">${esc(a.artist)}</div>` : ''}
@@ -268,10 +291,10 @@ async function openAlbum(id) {
     document.getElementById('al-meta').textContent = a.files.length + ' треков';
     document.getElementById('al-tracks').innerHTML = a.files.map((f, i) => {
       const ok = f.ready;
-      const st = ok ? [f.duration ? fmt(f.duration) : '', f.format].filter(Boolean).join(' · ') : Math.round(f.progress * 100) + '%';
+      const st = fileStatus(f);
       return `<div class="track ${ok ? '' : 'disabled'}" onclick="${ok ? `playTrack(${id},${i})` : ''}">
         <span>${i+1}. ${esc(f.title || f.name)}</span>
-        <span class="tr ${ok ? 'ok' : ''}">${st}</span>
+        <span class="tr ${f.state}">${st}</span>
       </div>`;
     }).join('');
   } catch(e) { document.getElementById('al-tracks').innerHTML = '<p>Ошибка: ' + esc(e.message) + '</p>'; }
@@ -301,18 +324,29 @@ async function togglePlay() {
 async function loadQueue(aid) {
   const box = document.getElementById('queue');
   try {
-    const a = await api('/api/albums/'+aid+'/files');
-    const p = await api('/api/player');
-    box.innerHTML = a.files.map((f, i) => {
-      const ok = f.ready;
-      const cur = (p.album_id === aid && p.track_index === i);
-      const st = ok ? [f.duration ? fmt(f.duration) : '', f.format].filter(Boolean).join(' · ') : Math.round(f.progress * 100) + '%';
-      return `<div class="track ${ok ? '' : 'disabled'} ${cur ? 'current' : ''}" onclick="${ok ? `playTrack(${aid},${i})` : ''}">
-        <span>${i+1}. ${esc(f.title || f.name)}</span>
-        <span class="tr ${ok ? 'ok' : ''}">${st}</span>
+    const q = await api('/api/queue');
+    if (!q.queue.length) { box.innerHTML = '<p style="color:#8b93a1">Очередь пуста</p>'; return; }
+    box.innerHTML = q.queue.map((e, i) => {
+      return `<div class="track ${e.current ? 'current' : ''}" onclick="queueJump(${i})">
+        <span>${i+1}. ${esc(e.title)}</span>
+        <span class="tr">${e.current ? '▶' : ''}</span>
       </div>`;
     }).join('');
   } catch(e) { box.innerHTML = ''; }
+}
+async function queueJump(pos) {
+  try { await api('/api/queue/jump?pos=' + pos, {method:'POST'}); poll(); } catch(e){}
+}
+async function queueAlbum(id) {
+  try {
+    const a = await api('/api/albums/'+id+'/files');
+    for (let i = 0; i < a.files.length; i++) {
+      if (a.files[i].ready) {
+        await api('/api/queue', {method:'POST', body: JSON.stringify({album_id: id, track_index: i, mode: 'end'})});
+      }
+    }
+    poll();
+  } catch(e) { alert('Ошибка: ' + e.message); }
 }
 function renderMini(p) {
   const cover = document.getElementById('m-cover');

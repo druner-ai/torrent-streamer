@@ -56,9 +56,11 @@ def test_album_files_ready_progress(tmp_path):
         assert body["id"] == aid
         assert body["files"] == [
             {"name": "01.flac", "title": "01", "path": "01.flac", "size": 100,
-             "ready": True, "progress": 1.0, "duration": None, "format": None},
+             "ready": True, "progress": 1.0, "duration": None, "format": None,
+             "state": "ready"},
             {"name": "02.flac", "title": "02", "path": "02.flac", "size": 200,
-             "ready": False, "progress": 0.5, "duration": None, "format": None},
+             "ready": False, "progress": 0.5, "duration": None, "format": None,
+             "state": "downloading"},
         ]
 
 
@@ -277,6 +279,8 @@ def _reset_oaat_state():
     main._OAAT_COVER_URL = None
     main._OAAT_VOLUME = 100
     main._OAAT_FORMAT = None
+    main._QUEUE = []
+    main._QUEUE_POS = -1
 
 
 def _seed_album_with_tracks(main, db_path):
@@ -530,4 +534,22 @@ def test_player_volume_persists():
         assert r.status_code == 200
         assert r.json() == {"ok": True, "volume": 30}
         assert main._OAAT_VOLUME == 30
+    _reset_oaat_state()
+
+
+def test_queue_add_and_get():
+    _reset_oaat_state()
+    r = client.post("/api/queue", json={"album_id": 1, "track_index": 2, "mode": "end"})
+    assert r.status_code == 200
+    assert r.json()["queue_len"] == 1
+
+    r = client.post("/api/queue", json={"album_id": 1, "track_index": 5, "mode": "next"})
+    assert r.json()["queue_len"] == 2
+
+    r = client.get("/api/queue")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["queue"]) == 2
+    assert body["queue"][0]["track_index"] == 5  # mode=next вставил в начало (pos=-1)
+    assert body["queue"][1]["track_index"] == 2
     _reset_oaat_state()
