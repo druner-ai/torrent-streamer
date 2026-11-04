@@ -44,6 +44,17 @@ export const api = {
     return request(`/api/catalog${suffix}`)
   },
   catalogSections: () => request('/api/catalog/sections'),
+  catalogGroups: (params = {}) => {
+    const qs = new URLSearchParams()
+    if (params.forum_id) qs.set('forum_id', params.forum_id)
+    if (params.min_seeders) qs.set('min_seeders', params.min_seeders)
+    if (params.lossless != null) qs.set('lossless', params.lossless ? 'true' : 'false')
+    if (params.q) qs.set('q', params.q)
+    if (params.genre) qs.set('genre', params.genre)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return request(`/api/catalog/groups${suffix}`)
+  },
+  catalogCovers: () => post('/api/catalog/covers'),
   downloadTorrent: (t) => post('/api/catalog/download', { t }),
 
   queue: () => request('/api/queue'),

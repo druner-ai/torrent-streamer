@@ -1,4 +1,4 @@
-import { Download, Loader2, Rss, Search } from 'lucide-react'
+import { Download, Loader2, Rss, Search, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api.js'
 import { formatSize, seedersTone } from '../utils.js'
@@ -7,6 +7,23 @@ const toneText = {
   success: 'text-success',
   warning: 'text-warning',
   danger: 'text-danger',
+}
+
+const fmtBadge = (e) => {
+  const f = (e.format || '').toUpperCase()
+  const b = e.bitrate || ''
+  const hi = /24\s*\/|DSD|SACD/i.test(f + ' ' + b)
+  return (
+    <span
+      className={`shrink-0 rounded-xs px-2 py-0.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider ${
+        hi
+          ? 'bg-[#3D2E0E] text-[#F0B429] ring-1 ring-[#7A5B17]'
+          : 'bg-[#262A33] text-[#A7ADBA]'
+      }`}
+    >
+      {[f, b].filter(Boolean).join(' ')}
+    </span>
+  )
 }
 
 export default function Tracker({ notify, onAlbumAdded }) {
@@ -18,10 +35,11 @@ export default function Tracker({ notify, onAlbumAdded }) {
   const [losslessOnly, setLosslessOnly] = useState(false)
   const [qInput, setQInput] = useState('')
   const [q, setQ] = useState('')
-  const [items, setItems] = useState([])
+  const [groups, setGroups] = useState([])
   const [count, setCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [selected, setSelected] = useState(null)
   const [downloadingT, setDownloadingT] = useState(null)
 
   useEffect(() => {
@@ -55,7 +73,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
     setLoading(true)
     setError(null)
     api
-      .catalog({
+      .catalogGroups({
         forum_id: forumId || undefined,
         min_seeders: minSeeders || undefined,
         lossless: losslessOnly ? true : undefined,
@@ -63,8 +81,8 @@ export default function Tracker({ notify, onAlbumAdded }) {
       })
       .then((data) => {
         if (!alive) return
-        setItems(data.items || [])
-        setCount(data.count ?? (data.items || []).length)
+        setGroups(data.groups || [])
+        setCount(data.count ?? (data.groups || []).length)
       })
       .catch((e) => {
         if (alive) setError(e.message)
@@ -82,18 +100,26 @@ export default function Tracker({ notify, onAlbumAdded }) {
     [sections, sectionId],
   )
 
-  async function download(item) {
-    setDownloadingT(item.t)
+  async function download(edition) {
+    setDownloadingT(edition.t)
     try {
-      const res = await api.downloadTorrent(item.t)
-      notify(`Добавлено в библиотеку: ${res.name || item.title}`, 'success')
+      const res = await api.downloadTorrent(edition.t)
+      notify(`Добавлено в библиотеку: ${res.name || edition.title}`, 'success')
       onAlbumAdded()
+      setSelected(null)
     } catch (e) {
       notify(e.message, 'error')
     } finally {
       setDownloadingT(null)
     }
   }
+
+  const chip = (active) =>
+    `shrink-0 rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
+      active
+        ? 'bg-primary-tint text-primary'
+        : 'bg-surface-1 text-text-secondary hover:bg-surface-2'
+    }`
 
   return (
     <div className="mx-auto max-w-[1400px] px-4 py-8 md:px-6">
@@ -102,28 +128,11 @@ export default function Tracker({ notify, onAlbumAdded }) {
       </h1>
 
       <div className="no-scrollbar -mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1">
-        <button
-          type="button"
-          onClick={() => setSectionId(null)}
-          className={`shrink-0 rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
-            sectionId === null
-              ? 'bg-primary-tint text-primary'
-              : 'bg-surface-1 text-text-secondary hover:bg-surface-2'
-          }`}
-        >
+        <button type="button" onClick={() => setSectionId(null)} className={chip(sectionId === null)}>
           Все
         </button>
         {sections.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => setSectionId(s.id)}
-            className={`shrink-0 rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
-              sectionId === s.id
-                ? 'bg-primary-tint text-primary'
-                : 'bg-surface-1 text-text-secondary hover:bg-surface-2'
-            }`}
-          >
+          <button key={s.id} type="button" onClick={() => setSectionId(s.id)} className={chip(sectionId === s.id)}>
             {s.title}
           </button>
         ))}
@@ -154,7 +163,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
           <input
             value={qInput}
             onChange={(e) => setQInput(e.target.value)}
-            placeholder="Поиск по раздачам…"
+            placeholder="Поиск: исполнитель или альбом…"
             className="w-full bg-transparent text-[12.5px] text-text-primary placeholder:text-text-muted focus:outline-none"
           />
         </div>
@@ -180,77 +189,148 @@ export default function Tracker({ notify, onAlbumAdded }) {
           Только Lossless
         </label>
 
-        <span className="font-mono text-[11px] text-text-muted">{count} раздач</span>
+        <span className="font-mono text-[11px] text-text-muted">{count} релизов</span>
       </div>
 
       {error && (
         <div className="mb-4 rounded-sm bg-danger/10 p-3 text-[14px] text-danger">{error}</div>
       )}
 
-      <div className="overflow-hidden rounded-md border border-border-subtle">
-        {loading ? (
-          <div className="space-y-1 p-2">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="h-14 animate-pulse rounded-md bg-surface-1" />
-            ))}
-          </div>
-        ) : items.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 py-12">
-            <Rss size={36} className="text-text-muted" />
-            <p className="text-[14px] text-text-secondary">Раздач не найдено</p>
-          </div>
-        ) : (
-          <ul className="divide-y divide-border-subtle">
-            {items.map((item) => {
-              const tone = seedersTone(item.seeders || 0)
-              return (
-                <li
-                  key={item.t}
-                  className="flex items-center gap-3 px-3 py-3 transition-colors hover:bg-surface-2 md:px-4"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[14px] leading-5 text-text-primary">{item.title}</p>
-                    <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-text-muted">
-                      <span className={toneText[tone]}>
-                        {item.seeders || 0} сид. · {item.leechers || 0} лич.
+      {loading ? (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+          {Array.from({ length: 10 }).map((_, i) => (
+            <div key={i} className="aspect-square animate-pulse rounded-md bg-surface-1" />
+          ))}
+        </div>
+      ) : groups.length === 0 ? (
+        <div className="flex flex-col items-center gap-3 py-12">
+          <Rss size={36} className="text-text-muted" />
+          <p className="text-[14px] text-text-secondary">Ничего не найдено</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+          {groups.map((g) => {
+            const top = [...g.editions].sort((a, b) => b.seeders - a.seeders)[0] || {}
+            const tone = seedersTone(top.seeders || 0)
+            return (
+              <button
+                key={g.release_key}
+                type="button"
+                onClick={() => setSelected(g)}
+                className="group overflow-hidden rounded-md bg-surface-1 text-left shadow-1 transition-all hover:-translate-y-0.5 hover:bg-surface-2 hover:shadow-2"
+              >
+                <div className="relative aspect-square w-full overflow-hidden bg-surface-inset">
+                  {g.cover_url ? (
+                    <img
+                      src={g.cover_url}
+                      alt={g.album || g.artist || ''}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'
+                      }}
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center">
+                      <span className="font-display text-3xl font-bold text-text-disabled">
+                        {(g.artist || g.album || '?').slice(0, 1).toUpperCase()}
                       </span>
-                      <span>{formatSize(item.size)}</span>
-                      <span>{item.year || '—'}</span>
-                    </p>
+                    </div>
+                  )}
+                  {g.count > 1 && (
+                    <span className="absolute left-2 top-2 rounded-xs bg-black/60 px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-text-primary">
+                      {g.count} изд.
+                    </span>
+                  )}
+                </div>
+                <div className="p-3">
+                  <p className="truncate text-[13px] font-medium leading-5 text-text-primary">
+                    {g.album || g.title || '—'}
+                  </p>
+                  <p className="truncate text-[12px] text-text-secondary">{g.artist || '—'}</p>
+                  <p className="mt-1 flex items-center justify-between font-mono text-[10.5px] text-text-muted">
+                    <span className={toneText[tone]}>{top.seeders || 0} сид.</span>
+                    {g.year && <span>{g.year}</span>}
+                  </p>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {selected && (
+        <div
+          className="fixed inset-0 z-40 flex items-end justify-center bg-overlay md:items-center"
+          onClick={() => setSelected(null)}
+        >
+          <div
+            className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-t-xl bg-surface-3 p-5 shadow-4 md:rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start gap-4">
+              <div className="h-20 w-20 shrink-0 overflow-hidden rounded-md bg-surface-inset">
+                {selected.cover_url ? (
+                  <img src={selected.cover_url} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center font-display text-2xl font-bold text-text-disabled">
+                    {(selected.artist || selected.album || '?').slice(0, 1).toUpperCase()}
                   </div>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 className="truncate text-[18px] font-semibold text-text-primary">
+                  {selected.album || selected.title || '—'}
+                </h2>
+                <p className="truncate text-[14px] text-text-secondary">{selected.artist || '—'}</p>
+                {selected.genre && (
+                  <p className="mt-1 truncate text-[12px] text-text-muted">{selected.genre}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelected(null)}
+                className="rounded-sm p-1 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-primary"
+              >
+                <X size={18} />
+              </button>
+            </div>
 
-                  {item.lossless === 1 && (
-                    <span className="hidden shrink-0 rounded-xs bg-success/10 px-2 py-0.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider text-success sm:inline">
-                      Lossless
-                    </span>
-                  )}
-                  {item.lossless === 0 && (
-                    <span className="hidden shrink-0 rounded-xs bg-[#262A33] px-2 py-0.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider text-[#A7ADBA] sm:inline">
-                      Lossy
-                    </span>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => download(item)}
-                    disabled={downloadingT === item.t}
-                    className="flex h-9 shrink-0 items-center gap-2 rounded-sm bg-primary px-3 text-[13px] font-medium text-on-primary transition-colors hover:bg-primary-hover active:bg-primary-pressed disabled:opacity-60"
-                  >
-                    {downloadingT === item.t ? (
-                      <Loader2 size={15} className="animate-spin" />
-                    ) : (
-                      <Download size={15} />
-                    )}
-                    <span className="hidden sm:inline">
-                      {downloadingT === item.t ? 'Скачиваем…' : 'Скачать'}
-                    </span>
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-      </div>
+            <ul className="divide-y divide-border-subtle">
+              {selected.editions.map((e) => {
+                const tone = seedersTone(e.seeders || 0)
+                return (
+                  <li key={e.t} className="flex items-center gap-3 py-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">{fmtBadge(e)}</div>
+                      <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[11px] text-text-muted">
+                        <span className={toneText[tone]}>
+                          {e.seeders || 0} сид. · {e.leechers || 0} лич.
+                        </span>
+                        <span>{formatSize(e.size)}</span>
+                        {e.year && <span>{e.year}</span>}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => download(e)}
+                      disabled={downloadingT === e.t}
+                      className="flex h-9 shrink-0 items-center gap-2 rounded-sm bg-primary px-3 text-[13px] font-medium text-on-primary transition-colors hover:bg-primary-hover active:bg-primary-pressed disabled:opacity-60"
+                    >
+                      {downloadingT === e.t ? (
+                        <Loader2 size={15} className="animate-spin" />
+                      ) : (
+                        <Download size={15} />
+                      )}
+                      Скачать
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
