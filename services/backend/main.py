@@ -89,49 +89,49 @@ def search(q: str, limit: int = 10):
 
 
 # ---------- БД ----------
-def db():
-    c = sqlite3.connect(DB_PATH, timeout=30)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA busy_timeout=30000")
+_schema_lock = threading.Lock()
+_schema_path = None
+
+
+def _connect():
+    if DB_PATH == ":memory:":
+        return sqlite3.connect(":memory:", timeout=30)
+    return sqlite3.connect(DB_PATH, timeout=30)
+
+
+def _schema(c):
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("""CREATE TABLE IF NOT EXISTS albums(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         hash TEXT UNIQUE, name TEXT, status TEXT, added_at INTEGER,
         artist TEXT, cover_url TEXT)""")
-    try:
-        c.execute("ALTER TABLE albums ADD COLUMN artist TEXT")
-    except sqlite3.OperationalError:
-        pass  # колонки уже есть в существующей БД
-    try:
-        c.execute("ALTER TABLE albums ADD COLUMN cover_url TEXT")
-    except sqlite3.OperationalError:
-        pass  # колонки уже есть в существующей БД
+    for col in ("artist", "cover_url"):
+        with contextlib.suppress(sqlite3.OperationalError):
+            c.execute(f"ALTER TABLE albums ADD COLUMN {col} TEXT")
     c.execute("""CREATE TABLE IF NOT EXISTS tracks(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         album_id INTEGER, path TEXT, name TEXT, size INTEGER)""")
-    try:
-        c.execute("ALTER TABLE tracks ADD COLUMN duration REAL")
-    except sqlite3.OperationalError:
-        pass  # колонка уже есть
-    try:
-        c.execute("ALTER TABLE tracks ADD COLUMN title TEXT")
-    except sqlite3.OperationalError:
-        pass  # колонка уже есть
-    try:
-        c.execute("ALTER TABLE tracks ADD COLUMN format TEXT")
-    except sqlite3.OperationalError:
-        pass  # колонка уже есть
-    try:
-        c.execute("ALTER TABLE tracks ADD COLUMN year TEXT")
-    except sqlite3.OperationalError:
-        pass  # колонка уже есть
-    try:
-        c.execute("ALTER TABLE tracks ADD COLUMN genre TEXT")
-    except sqlite3.OperationalError:
-        pass  # колонка уже есть
+    for col in ("duration REAL", "title TEXT", "format TEXT", "year TEXT", "genre TEXT"):
+        with contextlib.suppress(sqlite3.OperationalError):
+            c.execute(f"ALTER TABLE tracks ADD COLUMN {col}")
     c.execute("""CREATE TABLE IF NOT EXISTS favorites(
         album_id INTEGER PRIMARY KEY, added_at INTEGER)""")
     c.commit()
+
+
+def db():
+    global _schema_path
+    c = _connect()
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA busy_timeout=30000")
+    if DB_PATH == ":memory:":
+        # каждая in-memory БД отдельна → схема на каждый вызов
+        _schema(c)
+    elif _schema_path != DB_PATH:
+        with _schema_lock:
+            if _schema_path != DB_PATH:
+                _schema(c)
+                _schema_path = DB_PATH
     return c
 
 
