@@ -209,7 +209,7 @@
         <div class="artist" id="al-artist"></div>
         <div class="meta" id="al-meta"></div>
         <div class="acts">
-          <button class="play" onclick="play(openAlbumId)">▶ Играть</button>
+          <button class="play" id="play-btn" onclick="play(openAlbumId)">▶ Играть</button>
           <button onclick="queueAlbum(openAlbumId)">＋ В очередь</button>
           <button id="fav-btn" onclick="toggleFav(openAlbumId)">☆ В избранное</button>
           <button class="del" onclick="del(openAlbumId)">Удалить</button>
@@ -243,6 +243,7 @@
 <script>
 let currentAlbumId = null;
 let openAlbumId = null;
+let openFiles = [];
 
 async function api(path, opts={}) {
   const headers = {'Content-Type':'application/json'};
@@ -527,6 +528,8 @@ async function openAlbum(id) {
   document.getElementById('al-cover').src = '/api/albums/' + id + '/cover';
   try {
     const a = await api('/api/albums/' + id + '/files');
+    openFiles = a.files || [];
+    document.getElementById('play-btn').disabled = !openFiles.some(x => x.ready);
     document.getElementById('al-name').textContent = a.name || ('альбом #' + id);
     document.getElementById('al-artist').textContent = a.artist || '';
     const first = a.files[0] || {};
@@ -551,7 +554,13 @@ async function del(id) {
   try { await api('/api/albums/'+id, {method:'DELETE'}); closeAlbum(); load(); }
   catch(e) { alert('Ошибка: '+e.message); }
 }
-async function play(id) { try { await playTrack(id, 0); } catch(e){ alert('Ошибка: '+e.message); } }
+async function play(id) {
+  try {
+    const f = openFiles.find(x => x.ready);
+    if (!f) { alert('Альбом ещё качается — дождитесь готовности треков'); return; }
+    await playTrack(id, openFiles.indexOf(f));
+  } catch(e){ alert('Ошибка: '+e.message); }
+}
 async function playTrack(aid, idx) {
   try { await api('/api/albums/'+aid+'/tracks/'+idx+'/play', {method:'POST'}); closeAlbum(); switchTab('player'); poll(); }
   catch(e){ alert('Ошибка: '+e.message); }

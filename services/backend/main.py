@@ -881,6 +881,9 @@ def _start_track(aid, idx, offset=0.0):
         raise HTTPException(400, "нет такого трека в альбоме")
     track = tracks[idx]
     abs_path = os.path.join(save_path, track["path"])
+    # не даём ffmpeg упасть на недокачанном файле — явная ошибка вместо «no packets»
+    if track["size"] and os.path.exists(abs_path) and os.path.getsize(abs_path) < track["size"]:
+        raise HTTPException(409, "трек ещё скачивается — дождитесь готовности")
     # ts-controller стримит только WAV → декодируем остальное (FLAC/DSD/mp3)
     # через ffmpeg в lossless PCM; перемотку делает сам контроллер (без -ss).
     if Path(abs_path).suffix.lower() != ".wav":
