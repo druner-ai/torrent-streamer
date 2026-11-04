@@ -221,6 +221,9 @@ def prowlarr_search(query: str, limit: int = 10) -> list[dict]:
 
 # ---------- RuTracker каталог (витрина трекера) ----------
 RUTRACKER_BASE = "https://rutracker.org/forum"
+# cf_clearance привязан к UA FlareSolverr — прямой запрос dl.php обязан слать ТОТ ЖЕ UA
+RUTRACKER_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
 # жанровые подфорумы lossless (раздел f=2267 «Зарубежный джаз»)
 JAZZ_FORUMS = [2277, 2278, 2279, 2280, 2281, 2282, 2353, 2284, 2285, 2283, 2286]
 
@@ -336,7 +339,7 @@ def catalog_download(req: CatalogDownloadReq):
     jar = {c["name"]: c["value"] for c in _rutracker_cookies() if c.get("name")}
     r = requests.get(f"{RUTRACKER_BASE}/dl.php?t={req.t}", cookies=jar, timeout=30,
                      headers={"Referer": f"{RUTRACKER_BASE}/viewtopic.php?t={req.t}",
-                              "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"})
+                              "User-Agent": RUTRACKER_UA})
     r.raise_for_status()
     if r.content[:200].lstrip().startswith(b"<"):
         raise HTTPException(502, "не удалось скачать .torrent (нужна авторизация)")
