@@ -36,6 +36,9 @@ DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 API_KEY = os.getenv("API_KEY", "")
 PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696")
 PROWLARR_API_KEY = os.getenv("PROWLARR_API_KEY", "")
+FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://127.0.0.1:8191")
+RUTRACKER_LOGIN = os.getenv("RUTRACKER_LOGIN", "")
+RUTRACKER_PASSWORD = os.getenv("RUTRACKER_PASSWORD", "")
 COVER_CACHE_DIR = os.getenv("COVER_CACHE_DIR", "/data/covers")
 AUDIO_EXT = {".flac", ".mp3", ".dsf", ".dff", ".wav", ".m4a", ".aiff", ".aif", ".ape", ".ogg", ".opus", ".alac"}
 MUSICBRAINZ_UA = "torrent-streamer/0.1 (druner@gmail.com)"
@@ -116,6 +119,9 @@ def _schema(c):
             c.execute(f"ALTER TABLE tracks ADD COLUMN {col}")
     c.execute("""CREATE TABLE IF NOT EXISTS favorites(
         album_id INTEGER PRIMARY KEY, added_at INTEGER)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS catalog(
+        t INTEGER PRIMARY KEY, forum_id INTEGER, title TEXT, size TEXT,
+        seeders INTEGER, leechers INTEGER, crawled_at INTEGER)""")
     c.commit()
 
 
@@ -209,6 +215,93 @@ def prowlarr_search(query: str, limit: int = 10) -> list[dict]:
         return results
     except Exception:  # noqa: BLE001 — поиск не должен ронять API
         return []
+
+
+# ---------- RuTracker каталог (витрина трекера) ----------
+RUTRACKER_BASE = "https://rutracker.org/forum"
+# жанровые подфорумы lossless (раздел f=2267 «Зарубежный джаз»)
+JAZZ_FORUMS = [2277, 2278, 2279, 2280, 2281, 2282, 2353, 2284, 2285, 2283, 2286]
+
+
+class CatalogRefreshReq(BaseModel):
+    forums: list[int] = JAZZ_FORUMS
+    pages: int = 3
+
+
+def _flaresolverr_get(url: str) -> str:
+    r = requests.post(f"{FLARESOLVERR_URL}/v1",
+                      json={"cmd": "request.get", "url": url, "maxTimeout": 30000},
+                      timeout=45)
+    r.raise_for_status()
+    return r.json().get("solution", {}).get("response", "") or ""
+
+
+def _parse_forum_page(html: str) -> list[dict]:
+    rows = []
+    for tr in re.split(r"<tr", html)[1:]:
+        if "dl-stub" not in tr:
+            continue
+        m = re.search(r'title="([^"]+)"[^>]*href="viewtopic\.php\?t=(\d+)"', tr)
+        if not m:
+            continue
+        s = re.search(r'class="seedmed"[^>]*><b>(\d+)</b>', tr)
+        l = re.search(r'class="leechmed"[^>]*><b>(\d+)</b>', tr)
+        sz = re.search(r'class="[^"]*dl-stub[^"]*">([^<]+)</a>', tr)
+        rows.append({
+            "t": int(m.group(2)),
+            "title": html.unescape(m.group(1)).strip(),
+            "seeders": int(s.group(1)) if s else 0,
+            "leechers": int(l.group(1)) if l else 0,
+            "size": (sz.group(1) or "").replace("&nbsp;", " ").strip() if sz else "",
+        })
+    return rows
+
+
+def crawl_forum(forum_id: int, pages: int = 3) -> list[dict]:
+    rows = []
+    for p in range(pages):
+        url = f"{RUTRACKER_BASE}/viewforum.php?f={forum_id}&start={p * 50}"
+        page = _parse_forum_page(_flaresolverr_get(url))
+        if not page:
+            break  # пустая/последняя страница
+        for r in page:
+            r["forum_id"] = forum_id
+        rows += page
+    return rows
+
+
+@app.get("/api/catalog")
+def catalog(forum_id: int | None = None):
+    with db() as c:
+        if forum_id:
+            rows = c.execute(
+                "SELECT * FROM catalog WHERE forum_id=? ORDER BY seeders DESC, t DESC",
+                (forum_id,)).fetchall()
+        else:
+            rows = c.execute("SELECT * FROM catalog ORDER BY seeders DESC, t DESC").fetchall()
+        return {"items": [dict(r) for r in rows], "count": len(rows)}
+
+
+@app.post("/api/catalog/refresh")
+def catalog_refresh(req: CatalogRefreshReq):
+    crawled: list[dict] = []
+    for fid in req.forums:
+        crawled += crawl_forum(fid, req.pages)
+    if not crawled:
+        return {"ok": True, "count": 0}
+    now = int(time.time())
+    with db() as c:
+        c.executemany(
+            """INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at)
+               VALUES(:t,:forum_id,:title,:size,:seeders,:leechers,:crawled_at)
+               ON CONFLICT(t) DO UPDATE SET seeders=excluded.seeders,
+                   leechers=excluded.leechers, crawled_at=excluded.crawled_at""",
+            [{"t": r["t"], "forum_id": r["forum_id"], "title": r["title"],
+              "size": r["size"], "seeders": r["seeders"], "leechers": r["leechers"],
+              "crawled_at": now} for r in crawled],
+        )
+        c.commit()
+    return {"ok": True, "count": len(crawled)}
 
 
 # ---------- qbittorrent ----------
