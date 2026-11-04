@@ -9,6 +9,7 @@ import re
 import socket
 import sqlite3
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -54,6 +55,7 @@ _OAAT_VOLUME = 100
 _OAAT_FORMAT = None
 _QUEUE = []          # очередь воспроизведения: [{"aid": int, "idx": int}, ...]
 _QUEUE_POS = -1      # позиция текущего трека в очереди; -1 = очереди нет
+_SLEEP_TIMER = None  # таймер сна (threading.Timer или None)
 
 # ---------- защита API ключом (опционально) ----------
 @app.middleware("http")
@@ -117,6 +119,16 @@ def db():
         c.execute("ALTER TABLE tracks ADD COLUMN format TEXT")
     except sqlite3.OperationalError:
         pass  # колонка уже есть
+    try:
+        c.execute("ALTER TABLE tracks ADD COLUMN year TEXT")
+    except sqlite3.OperationalError:
+        pass  # колонка уже есть
+    try:
+        c.execute("ALTER TABLE tracks ADD COLUMN genre TEXT")
+    except sqlite3.OperationalError:
+        pass  # колонка уже есть
+    c.execute("""CREATE TABLE IF NOT EXISTS favorites(
+        album_id INTEGER PRIMARY KEY, added_at INTEGER)""")
     c.commit()
     return c
 
@@ -333,14 +345,33 @@ def albums():
                         LEFT JOIN tracks t ON t.album_id=a.id GROUP BY a.id ORDER BY a.id DESC""").fetchall()
     out = []
     qb = QB()
+    favs = {row["album_id"] for row in c.execute("SELECT album_id FROM favorites")}
     for r in rows:
         info = qb.find_by_hash(r["hash"])
         status = _torrent_state(info["state"]) if info else (r["status"] or "downloading")
         progress = info["progress"] if info else 0
+        year = genre = None
+        for t in c.execute("""SELECT year, genre FROM tracks
+                              WHERE album_id=? AND (year IS NOT NULL OR genre IS NOT NULL)
+                              LIMIT 1""", (r["id"],)):
+            year, genre = t["year"], t["genre"]
         out.append({"id": r["id"], "hash": r["hash"], "name": r["name"],
                     "status": status, "progress": round(progress * 100, 1),
-                    "tracks": r["n"], "artist": r["artist"], "cover_url": r["cover_url"]})
+                    "tracks": r["n"], "artist": r["artist"], "cover_url": r["cover_url"],
+                    "year": year, "genre": genre, "favorite": r["id"] in favs})
     return out
+
+@app.post("/api/albums/{aid}/favorite")
+def toggle_favorite(aid: int):
+    c = db()
+    row = c.execute("SELECT album_id FROM favorites WHERE album_id=?", (aid,)).fetchone()
+    if row:
+        c.execute("DELETE FROM favorites WHERE album_id=?", (aid,))
+        c.commit()
+        return {"ok": True, "favorite": False}
+    c.execute("INSERT INTO favorites(album_id, added_at) VALUES(?, ?)", (aid, int(time.time())))
+    c.commit()
+    return {"ok": True, "favorite": True}
 
 @app.get("/api/albums/{aid}")
 def album(aid: int):
@@ -385,8 +416,11 @@ def album_files(aid: int):
         title = t["title"]
         duration = t["duration"]
         fmt = t["format"]
-        # лениво читаем duration/title/format из скачанного файла и кэшируем
-        if ready and save_path and (title is None or duration is None or fmt is None):
+        year = t["year"]
+        genre = t["genre"]
+        # лениво читаем метаданные из скачанного файла и кэшируем
+        if ready and save_path and (title is None or duration is None or fmt is None
+                                    or year is None or genre is None):
             abs_path = os.path.join(save_path, t["path"])
             dur, tl, _, _, fmeta = _read_meta(abs_path)
             if dur is not None:
@@ -395,8 +429,13 @@ def album_files(aid: int):
                 title = tl
             if fmeta:
                 fmt = fmeta
-            c.execute("UPDATE tracks SET duration=?, title=?, format=? WHERE id=?",
-                      (duration, title, fmt, t["id"]))
+            yr, gn = _read_year_genre(abs_path)
+            if yr is not None:
+                year = yr
+            if gn is not None:
+                genre = gn
+            c.execute("UPDATE tracks SET duration=?, title=?, format=?, year=?, genre=? WHERE id=?",
+                      (duration, title, fmt, year, genre, t["id"]))
         out.append({
             "name": t["name"],
             "title": title or _clean_track_name(t["name"]),
@@ -407,6 +446,8 @@ def album_files(aid: int):
             "progress": float(progress),
             "duration": duration,
             "format": fmt,
+            "year": year,
+            "genre": genre,
         })
     c.commit()
     return {"id": aid, "name": a["name"], "artist": a["artist"], "files": out}
@@ -516,6 +557,26 @@ def _read_meta(path):
         return duration, title, artist, album, fmt
     except Exception:  # noqa: BLE001 — метаданные не критичны
         return None, None, None, None, None
+
+
+def _read_year_genre(path):
+    """(year, genre) из тегов → (str|None, str|None)."""
+    try:
+        f = MutagenFile(path)
+        if f is None:
+            return None, None
+        tags = getattr(f, "tags", None)
+        year = genre = None
+        if tags:
+            for k in ("date", "year", "originaldate"):
+                v = tags.get(k)
+                if v:
+                    year = str(v[0])[:4]  # «2026-03-01» → «2026»
+                    break
+            genre = (tags.get("genre") or [None])[0]
+        return year, genre
+    except Exception:  # noqa: BLE001 — метаданные не критичны
+        return None, None
 
 
 def _read_cover(path):
@@ -644,6 +705,28 @@ def player_volume(level: int):
     _ts_cmd({"cmd": "volume", "level": level})
     _OAAT_VOLUME = level
     return {"ok": True, "volume": level}
+
+
+@app.post("/api/player/sleep")
+def player_sleep(minutes: int):
+    """Таймер сна: остановить через N минут (0 — отменить)."""
+    global _SLEEP_TIMER
+    if _SLEEP_TIMER:
+        _SLEEP_TIMER.cancel()
+        _SLEEP_TIMER = None
+    if minutes <= 0:
+        return {"ok": True, "sleep": None}
+
+    def _do_stop():
+        global _SLEEP_TIMER
+        _SLEEP_TIMER = None
+        with contextlib.suppress(Exception):
+            player_cmd("stop")
+
+    _SLEEP_TIMER = threading.Timer(minutes * 60, _do_stop)
+    _SLEEP_TIMER.daemon = True
+    _SLEEP_TIMER.start()
+    return {"ok": True, "sleep": minutes}
 
 
 @app.get("/api/player")

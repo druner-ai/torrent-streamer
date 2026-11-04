@@ -57,10 +57,10 @@ def test_album_files_ready_progress(tmp_path):
         assert body["files"] == [
             {"name": "01.flac", "title": "01", "path": "01.flac", "size": 100,
              "ready": True, "progress": 1.0, "duration": None, "format": None,
-             "state": "ready"},
+             "state": "ready", "year": None, "genre": None},
             {"name": "02.flac", "title": "02", "path": "02.flac", "size": 200,
              "ready": False, "progress": 0.5, "duration": None, "format": None,
-             "state": "downloading"},
+             "state": "downloading", "year": None, "genre": None},
         ]
 
 
@@ -553,3 +553,18 @@ def test_queue_add_and_get():
     assert body["queue"][0]["track_index"] == 5  # mode=next вставил в начало (pos=-1)
     assert body["queue"][1]["track_index"] == 2
     _reset_oaat_state()
+
+
+def test_favorite_toggle(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        r = client.post("/api/albums/1/favorite")
+        assert r.status_code == 200
+        assert r.json()["favorite"] is True
+        r = client.post("/api/albums/1/favorite")
+        assert r.json()["favorite"] is False
+
+
+def test_player_sleep_off():
+    r = client.post("/api/player/sleep?minutes=0")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "sleep": None}

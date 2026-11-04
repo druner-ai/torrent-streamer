@@ -20,6 +20,11 @@
   .key input { width:100%; max-width:280px; padding:8px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
   main { padding:20px; max-width:1100px; margin:0 auto; }
   section[hidden] { display:none; }
+  .toolbar { display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+  .toolbar select { padding:8px 12px; border:1px solid #2c313a; border-radius:8px; background:#161a20; color:#e6e8ec; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { padding:6px 14px; border-radius:16px; background:#1c2027; color:#b6bcc8; cursor:pointer; font-size:13px; border:1px solid #2c313a; }
+  .chip.active { background:#2f6fed; color:#fff; }
   #search-results { margin-bottom:16px; }
   .result { border:1px solid #23262d; border-radius:10px; padding:12px 16px; margin-bottom:10px; background:#161a20; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
   .result .title { font-weight:600; }
@@ -120,6 +125,14 @@
 <main>
   <section id="catalog-view">
     <div id="search-results"></div>
+    <div class="toolbar">
+      <select id="sort" onchange="renderAlbums()">
+        <option value="added">Недавно добавлено</option>
+        <option value="year_desc">По году ↓</option>
+        <option value="year_asc">По году ↑</option>
+      </select>
+      <div id="genres" class="chips"></div>
+    </div>
     <div id="albums" class="grid"></div>
   </section>
   <section id="player-view" hidden>
@@ -141,6 +154,7 @@
       <button id="btn-playpause" onclick="togglePlay()">▶</button>
       <button onclick="cmd('next')">⏭</button>
       <button onclick="cmd('stop')">⏹</button>
+      <button id="sleep-btn" onclick="cycleSleep()" title="Таймер сна">⏰</button>
     </div>
     <div class="vol" style="display:flex; align-items:center; justify-content:center; gap:10px; padding:6px 0 12px;">
       <span style="color:#8b93a1; font-size:14px;">🔊</span>
@@ -165,6 +179,7 @@
         <div class="acts">
           <button class="play" onclick="play(openAlbumId)">▶ Играть</button>
           <button onclick="queueAlbum(openAlbumId)">＋ В очередь</button>
+          <button id="fav-btn" onclick="toggleFav(openAlbumId)">☆ В избранное</button>
           <button class="del" onclick="del(openAlbumId)">Удалить</button>
         </div>
       </div>
@@ -265,19 +280,53 @@ function fileStatus(f) {
   if (f.state === 'queued') return 'в очереди';
   return Math.round((f.progress || 0) * 100) + '%';
 }
+let albumsCache = [];
+let activeGenre = null;
+let showFav = false;
+
 async function load() {
   try {
-    const albums = await api('/api/albums');
-    document.getElementById('albums').innerHTML = albums.map(a => `
-      <div class="card" onclick="openAlbum(${a.id})">
-        <div class="cover-wrap">
-          <img class="cover" src="/api/albums/${a.id}/cover" alt="" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%231c2027%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2275%22 y=%2278%22 fill=%22%235a6270%22 font-size=%2230%22 text-anchor=%22middle%22%3E♪%3C/text%3E%3C/svg%3E'">
-          <span class="badge ${a.status}">${albumBadge(a)}</span>
-        </div>
-        <div class="nm">${esc(a.name)}</div>
-        ${a.artist ? `<div class="artist">${esc(a.artist)}</div>` : ''}
-      </div>`).join('');
+    albumsCache = await api('/api/albums');
+    renderGenres();
+    renderAlbums();
   } catch(e) { document.getElementById('albums').innerHTML = '<p>Ошибка: '+esc(e.message)+'</p>'; }
+}
+function renderAlbums() {
+  let list = [...albumsCache];
+  if (showFav) list = list.filter(a => a.favorite);
+  if (activeGenre) list = list.filter(a => a.genre === activeGenre);
+  const sort = document.getElementById('sort').value;
+  if (sort === 'year_desc') list.sort((a,b) => (+b.year||0) - (+a.year||0));
+  else if (sort === 'year_asc') list.sort((a,b) => (+a.year||0) - (+b.year||0));
+  document.getElementById('albums').innerHTML = list.map(a => `
+    <div class="card" onclick="openAlbum(${a.id})">
+      <div class="cover-wrap">
+        <img class="cover" src="/api/albums/${a.id}/cover" alt="" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%231c2027%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2275%22 y=%2278%22 fill=%22%235a6270%22 font-size=%2230%22 text-anchor=%22middle%22%3E♪%3C/text%3E%3C/svg%3E'">
+        <span class="badge ${a.status}">${albumBadge(a)}</span>
+      </div>
+      <div class="nm">${esc(a.name)}</div>
+      ${a.artist ? `<div class="artist">${esc(a.artist)}${a.year ? ' · ' + esc(a.year) : ''}</div>` : ''}
+    </div>`).join('');
+}
+function renderGenres() {
+  const genres = [...new Set(albumsCache.map(a => a.genre).filter(Boolean))].sort();
+  const box = document.getElementById('genres');
+  const favCount = albumsCache.filter(a => a.favorite).length;
+  const favChip = favCount
+    ? `<span class="chip ${showFav ? 'active' : ''}" onclick="toggleFavFilter()">★ ${favCount}</span>`
+    : '';
+  box.innerHTML = favChip + genres.map(g => `<span class="chip ${g === activeGenre ? 'active' : ''}" onclick="filterGenre(this)">${esc(g)}</span>`).join('');
+}
+function toggleFavFilter() {
+  showFav = !showFav;
+  renderGenres();
+  renderAlbums();
+}
+function filterGenre(el) {
+  const g = el.textContent;
+  activeGenre = (activeGenre === g) ? null : g;
+  renderGenres();
+  renderAlbums();
 }
 async function openAlbum(id) {
   openAlbumId = id;
@@ -288,7 +337,10 @@ async function openAlbum(id) {
     const a = await api('/api/albums/' + id + '/files');
     document.getElementById('al-name').textContent = a.name || ('альбом #' + id);
     document.getElementById('al-artist').textContent = a.artist || '';
-    document.getElementById('al-meta').textContent = a.files.length + ' треков';
+    const first = a.files[0] || {};
+    document.getElementById('al-meta').textContent = [first.year, first.genre, a.files.length + ' треков'].filter(Boolean).join(' · ');
+    const alb = albumsCache.find(x => x.id === id);
+    setFavBtn(alb ? alb.favorite : false);
     document.getElementById('al-tracks').innerHTML = a.files.map((f, i) => {
       const ok = f.ready;
       const st = fileStatus(f);
@@ -347,6 +399,29 @@ async function queueAlbum(id) {
     }
     poll();
   } catch(e) { alert('Ошибка: ' + e.message); }
+}
+function setFavBtn(fav) {
+  const b = document.getElementById('fav-btn');
+  if (b) b.textContent = fav ? '★ В избранном' : '☆ В избранное';
+}
+async function toggleFav(id) {
+  try {
+    const r = await api('/api/albums/'+id+'/favorite', {method:'POST'});
+    setFavBtn(r.favorite);
+    const a = albumsCache.find(x => x.id === id);
+    if (a) a.favorite = r.favorite;
+    renderAlbums();
+    renderGenres();
+  } catch(e) { alert('Ошибка: ' + e.message); }
+}
+const SLEEPS = [15, 30, 60, 0];
+let sleepIdx = 0;
+async function cycleSleep() {
+  const m = SLEEPS[sleepIdx % SLEEPS.length];
+  sleepIdx++;
+  await api('/api/player/sleep?minutes=' + m, {method:'POST'});
+  document.getElementById('sleep-btn').textContent = m ? ('⏰ ' + m + 'м') : '⏰';
+  document.getElementById('now-state').textContent = m ? ('стоп через ' + m + ' мин') : '';
 }
 function renderMini(p) {
   const cover = document.getElementById('m-cover');
