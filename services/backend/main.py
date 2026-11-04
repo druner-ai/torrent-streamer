@@ -402,6 +402,13 @@ def _release_key(artist, name):
     return f"{(artist or '').strip().lower()}|{key}"
 
 
+# канонические имена кодеков (в названиях регистр разнобойный: WavPack/WAVPack, Ape/APE)
+_FMT_NORM = {"FLAC": "FLAC", "WAVPACK": "WavPack", "APE": "APE", "ALAC": "ALAC",
+             "MP3": "MP3", "AAC": "AAC", "OGG": "OGG", "OPUS": "Opus", "WAV": "WAV",
+             "DSD": "DSD", "DSF": "DSF", "DFF": "DFF", "SACD": "SACD", "ISO": "ISO",
+             "DTS": "DTS"}
+
+
 def _quality(fmt: str | None, bitrate: str | None) -> str | None:
     """Категория качества записи: dsd | hires | cd | lossy."""
     f = (fmt or "").upper()
@@ -443,7 +450,7 @@ def _parse_torrent_title(title: str) -> dict:
     if fm:
         spec = fm.group(1)
         fm2 = re.match(r"(FLAC|WavPack|WAVPack|APE|ALAC|MP3|AAC|OGG|Opus|WAV|DSD|DSF|DFF|SACD|ISO|DTS)", spec, re.IGNORECASE)
-        fmt = fm2.group(1) if fm2 else None
+        fmt = _FMT_NORM.get(fm2.group(1).upper()) if fm2 else None
         bm = re.search(r"(24\s*/?\s*(?:192|96|88\.2|88|176\.4|176)|16\s*/?\s*44\.1|16\s*/?\s*44|DSD\s*(?:64|128|256)|\b(?:320|256|192|128)\s*kbps?)",
                        spec, re.IGNORECASE)
         if bm:
