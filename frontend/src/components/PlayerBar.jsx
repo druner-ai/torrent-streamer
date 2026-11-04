@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   Disc3,
+  MonitorSpeaker,
   Pause,
   Play,
   SkipBack,
@@ -197,6 +198,78 @@ function SleepMenu({ sleepMinutes, onSleep }) {
   )
 }
 
+function EndpointSelect({ onNotify }) {
+  const [open, setOpen] = useState(false)
+  const [devices, setDevices] = useState([])
+  const [current, setCurrent] = useState(null)
+
+  async function load() {
+    try {
+      const d = await api.endpoints()
+      setDevices(d.available_devices || [])
+      setCurrent(d.current_device || null)
+    } catch {
+      /* endpoint недоступен — оставляем пусто */
+    }
+  }
+
+  useEffect(() => {
+    load()
+  }, [])
+
+  async function choose(device) {
+    setOpen(false)
+    try {
+      await api.selectEndpoint(device)
+      setCurrent(device)
+      onNotify?.(`Выход: ${device}`, 'success')
+    } catch (e) {
+      onNotify?.(e.message, 'error')
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => {
+          load()
+          setOpen((v) => !v)
+        }}
+        title={`Аудиовыход: ${current || '—'}`}
+        className="flex items-center gap-1.5 rounded-sm px-2 py-1 text-[12px] text-text-muted transition-colors hover:bg-surface-2 hover:text-text-primary"
+      >
+        <MonitorSpeaker size={18} />
+        <span className="max-w-[120px] truncate">{current || 'Выход'}</span>
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-full right-0 z-20 mb-2 w-56 overflow-hidden rounded-lg border border-border-subtle bg-surface-3 shadow-3">
+            {devices.length === 0 ? (
+              <div className="px-3 py-2 text-[12px] text-text-muted">Нет устройств</div>
+            ) : (
+              devices.map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => choose(d)}
+                  className={`block w-full truncate px-3 py-2 text-left text-[13px] transition-colors hover:bg-surface-2 ${
+                    d === current ? 'text-primary' : 'text-text-secondary'
+                  }`}
+                >
+                  {d}
+                </button>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 function Controls({ player, onCmd }) {
   const stopped = player.state === 'stop'
   const playing = player.state === 'playing'
@@ -246,6 +319,7 @@ export default function PlayerBar({
   onSleep,
   sleepMinutes,
   onOpenAlbum,
+  onNotify,
 }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const hasTrack = player.state !== 'stop' && player.album_id != null
@@ -279,6 +353,7 @@ export default function PlayerBar({
         </div>
 
         <VolumeSlider player={player} onVolume={onVolume} />
+        <EndpointSelect onNotify={onNotify} />
         <SleepMenu sleepMinutes={sleepMinutes} onSleep={onSleep} />
       </div>
 
@@ -368,6 +443,7 @@ export default function PlayerBar({
             <Controls player={player} onCmd={onCmd} />
             <div className="flex w-full items-center justify-between">
               <VolumeSlider player={player} onVolume={onVolume} />
+              <EndpointSelect onNotify={onNotify} />
               <SleepMenu sleepMinutes={sleepMinutes} onSleep={onSleep} />
             </div>
           </div>

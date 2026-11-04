@@ -269,6 +269,7 @@ export default function App() {
           onSleep={handleSleep}
           sleepMinutes={sleepMinutes}
           onOpenAlbum={(id) => setOpenAlbumId(id)}
+          onNotify={pushToast}
         />
       </main>
 

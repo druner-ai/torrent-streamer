@@ -34,6 +34,8 @@ MPD_HOST = os.getenv("MPD_HOST", "127.0.0.1")
 MPD_PORT = int(os.getenv("MPD_PORT", "6600"))
 OAAT_TARGET = os.getenv("OAAT_TARGET", "192.168.31.215:9740")
 TS_CONTROLLER_SOCK = os.getenv("TS_CONTROLLER_SOCK", "/tmp/ts-controller.sock")
+# Web UI OAAT-эндпоинта (control 9740 + 1) — для выбора аудио-устройства на MacBook.
+OAAT_WEB = "http://" + OAAT_TARGET.rsplit(":", 1)[0] + ":9741"
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
 DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 API_KEY = os.getenv("API_KEY", "")
@@ -1148,6 +1150,36 @@ def player():
             "duration": resp.get("duration") or _OAAT_DURATION,
             "album": _OAAT_ALBUM_NAME, "artist": _OAAT_ARTIST, "cover_url": _OAAT_COVER_URL,
             "volume": _OAAT_VOLUME, "format": _OAAT_FORMAT}
+
+
+class EndpointSelectReq(BaseModel):
+    device: str
+
+
+@app.get("/api/endpoints")
+def endpoints():
+    """Список аудио-выходов endpoint'а (MacBook) + текущий выбор."""
+    try:
+        r = requests.get(f"{OAAT_WEB}/api/status", timeout=5)
+        r.raise_for_status()
+        d = r.json()
+        return {"current_device": d.get("current_device"),
+                "available_devices": d.get("available_devices", []),
+                "connected": d.get("connected", False),
+                "playing": d.get("playing", False)}
+    except requests.RequestException as e:
+        return JSONResponse({"detail": f"endpoint недоступен: {e}"}, status_code=502)
+
+
+@app.post("/api/endpoints/select")
+def endpoints_select(req: EndpointSelectReq):
+    """Переключить аудио-устройство endpoint'а (на лету)."""
+    try:
+        r = requests.post(f"{OAAT_WEB}/api/device", json={"device": req.device}, timeout=5)
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException as e:
+        return JSONResponse({"detail": f"endpoint недоступен: {e}"}, status_code=502)
 
 
 @app.post("/api/player/{cmd}")

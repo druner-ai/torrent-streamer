@@ -62,6 +62,9 @@ export const api = {
     post('/api/queue', { album_id: albumId, track_index: trackIndex, mode }),
   jumpQueue: (pos) => post(`/api/queue/jump?pos=${pos}`),
 
+  endpoints: () => request('/api/endpoints'),
+  selectEndpoint: (device) => post('/api/endpoints/select', { device }),
+
   player: () => request('/api/player'),
   playerCmd: (cmd) => post(`/api/player/${cmd}`),
   playerSeek: (sec) => post('/api/player/seek', { sec }),
