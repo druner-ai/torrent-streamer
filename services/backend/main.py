@@ -237,9 +237,9 @@ def _flaresolverr_get(url: str) -> str:
     return r.json().get("solution", {}).get("response", "") or ""
 
 
-def _parse_forum_page(html: str) -> list[dict]:
+def _parse_forum_page(page: str) -> list[dict]:
     rows = []
-    for tr in re.split(r"<tr", html)[1:]:
+    for tr in re.split(r"<tr", page)[1:]:
         if "dl-stub" not in tr:
             continue
         m = re.search(r'id="tt-(\d+)"[^>]*>(.*?)</a>', tr)
