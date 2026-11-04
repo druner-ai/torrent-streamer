@@ -2,6 +2,7 @@
 torrent-streamer backend — связывает qbittorrent (download) + MPD (play) + каталог (SQLite).
 Вход: magnet/ссылка → альбом с треками → play в MPD → управление.
 """
+import base64
 import contextlib
 import html
 import json
@@ -73,6 +74,20 @@ async def api_key_middleware(request, call_next):
         and request.headers.get("X-API-Key") != API_KEY
     ):
         return JSONResponse({"detail": "неверный API-ключ"}, status_code=401)
+    return await call_next(request)
+
+
+# ---------- Basic Auth для публичного доступа (Cloudflare Tunnel) ----------
+FRONTEND_AUTH = os.getenv("FRONTEND_AUTH", "")  # "user:pass" — пусто = выключено
+
+
+@app.middleware("http")
+async def basic_auth_middleware(request, call_next):
+    if FRONTEND_AUTH and request.url.path != "/api/health":
+        expected = "Basic " + base64.b64encode(FRONTEND_AUTH.encode()).decode()
+        if request.headers.get("Authorization") != expected:
+            return JSONResponse({"detail": "авторизация требуется"}, status_code=401,
+                                headers={"WWW-Authenticate": 'Basic realm="SoundVault"'})
     return await call_next(request)
 
 # ---------- health ----------

@@ -46,6 +46,7 @@ services:
       - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://127.0.0.1:8191}
       - RUTRACKER_LOGIN=${RUTRACKER_LOGIN:-}
       - RUTRACKER_PASSWORD=${RUTRACKER_PASSWORD:-}
+      - FRONTEND_AUTH=${FRONTEND_AUTH:-}
     volumes:
       - ./data:/data
       - /home/nuc/oaat/target/release/ts-controller:/usr/local/bin/ts-controller:ro
