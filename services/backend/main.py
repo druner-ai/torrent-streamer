@@ -55,6 +55,9 @@ if not OAAT_ENDPOINTS:
     OAAT_ENDPOINTS = {"MacBook": OAAT_TARGET}
 ACTIVE_EP_FILE = os.getenv("ACTIVE_EP_FILE", "/data/active_endpoint")
 OAAT_CONTROL_TOKEN = os.getenv("OAAT_CONTROL_TOKEN", "")
+# Виртуальные/ненужные аудиоустройства, которые прячем из списка (подстроки через запятую).
+OAAT_IGNORE_DEVICES = [m.strip().lower() for m in os.getenv(
+    "OAAT_IGNORE_DEVICES", "microsoft teams audio").split(",") if m.strip()]
 
 
 def _ep_web(name: str) -> str:
@@ -1258,9 +1261,14 @@ def _ep_status(name: str) -> dict:
     try:
         rd = requests.get(f"{web}/api/devices", timeout=3)
         rd.raise_for_status()
-        result["available_devices"] = rd.json().get("devices", [])
+        devices = rd.json().get("devices", [])
     except requests.RequestException:
-        result["available_devices"] = d.get("available_devices", [])
+        devices = d.get("available_devices", [])
+    # прячем виртуальные/ненужные устройства (напр. Microsoft Teams Audio)
+    result["available_devices"] = [
+        dev for dev in devices
+        if not any(marker in dev.lower() for marker in OAAT_IGNORE_DEVICES)
+    ]
     return result
 
 
@@ -1285,6 +1293,9 @@ def endpoints_select(req: EndpointSelectReq):
         _set_active_ep(req.endpoint)
         _start_ts(OAAT_ENDPOINTS[req.endpoint])
     if req.device:
+        # Пауза перед сменой устройства: позиция трека сохраняется в ts-controller,
+        # а не обнуляется (после переключения — resume с того же места).
+        _ts_cmd({"cmd": "pause"})
         try:
             r = requests.post(f"{_ep_web(_active_ep_name())}/api/device",
                               json={"device": req.device}, headers=_ep_headers(), timeout=5)
