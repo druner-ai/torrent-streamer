@@ -497,8 +497,13 @@ def catalog_refresh(req: CatalogRefreshReq):
                  p["album"], p["format"], p["bitrate"], rk, p["genre"]),
             )
         c.commit()
-    enriched = _enrich_covers()
-    return {"ok": True, "count": len(crawled), "covers": enriched}
+    return {"ok": True, "count": len(crawled)}
+
+
+@app.post("/api/catalog/covers")
+def catalog_covers(limit: int = 300):
+    """фоново/по запросу тянет обложки для релизов каталога без cover_url."""
+    return {"ok": True, "covers": _enrich_covers(limit)}
 
 
 def _rutracker_cookies() -> list[dict]:
