@@ -122,6 +122,7 @@
   <h1>torrent-streamer</h1>
   <nav>
     <button id="tab-catalog" class="active" onclick="switchTab('catalog')">Каталог</button>
+    <button id="tab-tracker" onclick="switchTab('tracker')">Трекер</button>
     <button id="tab-player" onclick="switchTab('player')">Плеер</button>
   </nav>
   <div id="catalog-tools">
@@ -150,6 +151,13 @@
       <div id="genres" class="chips"></div>
     </div>
     <div id="albums"></div>
+  </section>
+  <section id="tracker-view" hidden>
+    <div class="toolbar">
+      <button onclick="refreshTracker()">🔄 Обновить каталог</button>
+      <span id="tracker-count" style="color:#8b93a1"></span>
+    </div>
+    <div id="tracker-results"></div>
   </section>
   <section id="player-view" hidden>
     <div class="now">
@@ -246,9 +254,46 @@ keyEl.addEventListener('input', () => {
 function switchTab(name) {
   document.getElementById('catalog-view').hidden = (name !== 'catalog');
   document.getElementById('player-view').hidden = (name !== 'player');
+  document.getElementById('tracker-view').hidden = (name !== 'tracker');
   document.getElementById('catalog-tools').style.display = (name === 'catalog') ? '' : 'none';
   document.getElementById('tab-catalog').classList.toggle('active', name === 'catalog');
   document.getElementById('tab-player').classList.toggle('active', name === 'player');
+  document.getElementById('tab-tracker').classList.toggle('active', name === 'tracker');
+  if (name === 'tracker') loadTracker();
+}
+
+async function loadTracker() {
+  const box = document.getElementById('tracker-results');
+  try {
+    const d = await api('/api/catalog');
+    const items = d.items || [];
+    document.getElementById('tracker-count').textContent = items.length + ' раздач';
+    if (!items.length) { box.innerHTML = '<p>Каталог пуст — нажми «Обновить каталог».</p>'; return; }
+    box.innerHTML = items.map(r => `
+      <div class="result">
+        <div class="info">
+          <div class="title">${esc(r.title)}</div>
+          <div class="meta">${r.seeders} сидов · ${esc(r.size)}</div>
+        </div>
+        <button onclick="downloadTorrent(${r.t}, this)">Скачать</button>
+      </div>`).join('');
+  } catch(e) { box.innerHTML = '<p>Ошибка: ' + esc(e.message) + '</p>'; }
+}
+async function refreshTracker() {
+  const box = document.getElementById('tracker-results');
+  box.innerHTML = '<p>Обновляю каталог джаза… (~40 сек)</p>';
+  try {
+    await api('/api/catalog/refresh', {method:'POST', body: JSON.stringify({pages:1})});
+    await loadTracker();
+  } catch(e) { box.innerHTML = '<p>Ошибка: ' + esc(e.message) + '</p>'; }
+}
+async function downloadTorrent(t, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const r = await api('/api/catalog/download', {method:'POST', body: JSON.stringify({t})});
+    alert('Скачивание начато (' + r.bytes + ' байт .torrent)');
+  } catch(e) { alert('Ошибка: ' + e.message); }
+  if (btn) { btn.disabled = false; btn.textContent = 'Скачать'; }
 }
 
 async function add() {

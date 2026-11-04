@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 import requests
@@ -229,6 +230,10 @@ class CatalogRefreshReq(BaseModel):
     pages: int = 3
 
 
+class CatalogDownloadReq(BaseModel):
+    t: int
+
+
 def _flaresolverr_get(url: str) -> str:
     r = requests.post(f"{FLARESOLVERR_URL}/v1",
                       json={"cmd": "request.get", "url": url, "maxTimeout": 30000},
@@ -311,6 +316,37 @@ def catalog_refresh(req: CatalogRefreshReq):
     return {"ok": True, "count": len(crawled)}
 
 
+def _rutracker_cookies() -> list[dict]:
+    """логин RuTracker через FlareSolverr → cookies (bb_session и др.)."""
+    data = ("login_username=" + urllib.parse.quote(RUTRACKER_LOGIN)
+            + "&login_password=" + urllib.parse.quote(RUTRACKER_PASSWORD)
+            + "&login=%E2%F5%EE%E4")
+    r = requests.post(f"{FLARESOLVERR_URL}/v1",
+                      json={"cmd": "request.post", "url": f"{RUTRACKER_BASE}/login.php",
+                            "postData": data, "maxTimeout": 30000},
+                      timeout=45)
+    r.raise_for_status()
+    return r.json().get("solution", {}).get("cookies", [])
+
+
+@app.post("/api/catalog/download")
+def catalog_download(req: CatalogDownloadReq):
+    if not (RUTRACKER_LOGIN and RUTRACKER_PASSWORD):
+        raise HTTPException(400, "не задан логин RuTracker (RUTRACKER_LOGIN/RUTRACKER_PASSWORD)")
+    jar = {c["name"]: c["value"] for c in _rutracker_cookies() if c.get("name")}
+    r = requests.get(f"{RUTRACKER_BASE}/dl.php?t={req.t}", cookies=jar, timeout=30,
+                     headers={"Referer": f"{RUTRACKER_BASE}/viewtopic.php?t={req.t}",
+                              "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"})
+    r.raise_for_status()
+    if r.content[:200].lstrip().startswith(b"<"):
+        raise HTTPException(502, "не удалось скачать .torrent (нужна авторизация)")
+    path = f"/tmp/rt-{req.t}.torrent"
+    with open(path, "wb") as f:
+        f.write(r.content)
+    QB().add_file(path)
+    return {"ok": True, "t": req.t, "bytes": len(r.content)}
+
+
 # ---------- qbittorrent ----------
 class QB:
     def __init__(self):
@@ -325,6 +361,15 @@ class QB:
         r = self.s.post(f"{QBT_URL}/api/v2/torrents/add",
                         data={"urls": link, "sequentialDownload": "true",
                               "firstLastPiecePrio": "true"})
+        r.raise_for_status()
+
+    def add_file(self, path: str):
+        with open(path, "rb") as f:
+            r = self.s.post(f"{QBT_URL}/api/v2/torrents/add",
+                            data={"sequentialDownload": "true",
+                                  "firstLastPiecePrio": "true"},
+                            files={"torrents": (os.path.basename(path), f,
+                                                "application/x-bittorrent")})
         r.raise_for_status()
 
     def delete(self, hash: str):
