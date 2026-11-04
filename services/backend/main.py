@@ -812,6 +812,21 @@ class QB:
         self.s.post(f"{QBT_URL}/api/v2/torrents/filePrio",
                     data={"hash": hash_, "priority": "|".join(str(prios.get(f["index"], 0)) for f in files)})
 
+    def prioritize_window(self, hash_: str, window: set, audio_names: set):
+        # окно (текущий+следующий трек) — 6, остальные аудио — 1 (докачаются позже),
+        # не-аудио (cue/jpg/log) — 0. Приоритет высокий = качается первым при sequential.
+        files = self.files(hash_)
+        prios = {}
+        for f in files:
+            if f["name"] in window:
+                prios[f["index"]] = 6
+            elif f["name"] in audio_names:
+                prios[f["index"]] = 1
+            else:
+                prios[f["index"]] = 0
+        self.s.post(f"{QBT_URL}/api/v2/torrents/filePrio",
+                    data={"hash": hash_, "priority": "|".join(str(prios.get(f["index"], 0)) for f in files)})
+
 # ---------- MPD ----------
 def mpd_cmd(fn):
     c = MPDClient()
@@ -1248,7 +1263,8 @@ def _current_tracks(aid):
     save_path = info["save_path"] if info else None
     if not save_path:
         raise HTTPException(500, "не найден путь загрузки")
-    meta = {"name": a["name"], "artist": a["artist"], "cover_url": a["cover_url"]}
+    meta = {"name": a["name"], "artist": a["artist"], "cover_url": a["cover_url"],
+            "hash": a["hash"]}
     return tracks, save_path, meta
 
 
@@ -1350,6 +1366,14 @@ def _start_track(aid, idx, offset=0.0):
     if not (0 <= idx < len(tracks)):
         raise HTTPException(400, "нет такого трека в альбоме")
     track = tracks[idx]
+    # приоритизируем текущий + следующий трек (6), остальные аудио — 1 (докачаются позже),
+    # не-аудио — 0: нужный файл качается первым, но весь альбом в итоге докачается.
+    # best-effort: не блокирует play.
+    with contextlib.suppress(Exception):  # торрент может быть ещё не найден / удалён
+        audio_names = {t["path"] for t in tracks}
+        window = {tracks[i]["path"] for i in (idx, idx + 1) if 0 <= i < len(tracks)}
+        if window:
+            QB().prioritize_window(meta["hash"], window, audio_names)
     abs_path = os.path.join(save_path, track["path"])
     # не даём ffmpeg упасть на недокачанном файле — явная ошибка вместо «no packets»
     if track["size"] and os.path.exists(abs_path) and os.path.getsize(abs_path) < track["size"]:
