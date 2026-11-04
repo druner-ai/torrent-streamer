@@ -41,6 +41,9 @@ services:
       - TS_CONTROLLER_SOCK=/tmp/ts-controller.sock
       - PROWLARR_URL=${PROWLARR_URL:-http://127.0.0.1:9696}
       - PROWLARR_API_KEY=${PROWLARR_API_KEY:-}
+      - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://127.0.0.1:8191}
+      - RUTRACKER_LOGIN=${RUTRACKER_LOGIN:-}
+      - RUTRACKER_PASSWORD=${RUTRACKER_PASSWORD:-}
     volumes:
       - ./data:/data
       - /home/nuc/oaat/target/release/ts-controller:/usr/local/bin/ts-controller:ro
