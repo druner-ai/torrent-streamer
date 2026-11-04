@@ -229,16 +229,21 @@ def enrich_album(name: str) -> dict | None:
         title = rel.get("title")
         cover_url = None
         if mbid:
-            cr = requests.get(
-                f"https://coverartarchive.org/release/{mbid}/front",
-                headers={"User-Agent": MUSICBRAINZ_UA},
-                timeout=10,
-            )
-            cr.raise_for_status()
-            cover = cr.json()
-            images = cover.get("images", [])
-            if images:
-                cover_url = images[0].get("image")
+            try:
+                # /front отдаёт 307-редирект на JPEG (не JSON) — юзаем JSON-эндпоинт /
+                cr = requests.get(
+                    f"https://coverartarchive.org/release/{mbid}/",
+                    headers={"User-Agent": MUSICBRAINZ_UA},
+                    timeout=10,
+                )
+                cr.raise_for_status()
+                images = cr.json().get("images", [])
+                front = next((i for i in images if i.get("front")),
+                             images[0] if images else None)
+                if front:
+                    cover_url = front.get("image")
+            except Exception:  # noqa: BLE001 — нет обложки/таймаут → None
+                cover_url = None
         return {"artist": artist, "title": title, "cover_url": cover_url}
     except Exception:  # noqa: BLE001 — обогащение не должно ронять добавление
         return None
