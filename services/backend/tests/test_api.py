@@ -26,6 +26,35 @@ def test_albums_empty_when_no_albums_and_no_torrents():
         assert r.json() == []
 
 
+def test_parse_torrent_title():
+    p = main._parse_torrent_title(
+        "(Bop) Duke Ellington - The Far East Suite [1967] - 2011, FLAC (tracks+.cue), lossless")
+    assert p["artist"] == "Duke Ellington"
+    assert p["album"] == "The Far East Suite"
+    assert p["format"] == "FLAC"
+    assert p["lossless"] == 1
+    assert p["year"] == "1967"
+    assert "Bop" in p["genre"]
+
+    p = main._parse_torrent_title(
+        "(Swing) Johnny Hodges & Wild Bill Davis - Blue Pyramid {1965} - 2000, MP3 320 kbps, lossy")
+    assert p["artist"] == "Johnny Hodges & Wild Bill Davis"
+    assert p["format"] == "MP3"
+    assert p["lossless"] == 0
+    assert p["bitrate"] == "320kbps"
+
+    p = main._parse_torrent_title("(Gypsy) Stephane Grappelli & Stuff Smith — Violins No End — 1996, FLAC (image+.cue), lossless")
+    assert p["artist"] == "Stephane Grappelli & Stuff Smith"
+    assert p["album"] == "Violins No End"
+    assert p["format"] == "FLAC"
+
+
+def test_release_key_groups_editions():
+    a = main._release_key("Stuff Smith", "Swingin' Stuff")
+    b = main._release_key("Stuff Smith", "Swingin' Stuff (2005)")
+    assert a == b == "stuff smith|swingin' stuff"
+
+
 def test_album_404():
     r = client.get("/api/albums/999")
     assert r.status_code == 404

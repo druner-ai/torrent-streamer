@@ -124,7 +124,9 @@ def _schema(c):
     c.execute("""CREATE TABLE IF NOT EXISTS catalog(
         t INTEGER PRIMARY KEY, forum_id INTEGER, title TEXT, size TEXT,
         seeders INTEGER, leechers INTEGER, crawled_at INTEGER)""")
-    for col in ("lossless INTEGER", "year TEXT"):
+    for col in ("lossless INTEGER", "year TEXT", "artist TEXT", "album TEXT",
+                "format TEXT", "bitrate TEXT", "release_key TEXT", "cover_url TEXT",
+                "genre TEXT"):
         with contextlib.suppress(sqlite3.OperationalError):
             c.execute(f"ALTER TABLE catalog ADD COLUMN {col}")
     c.commit()
@@ -149,11 +151,60 @@ def db():
 # ---------- MusicBrainz ----------
 def _release_key(artist, name):
     """нормализованный ключ релиза: «исполнитель | название» без тегов/года/скобок."""
-    key = re.sub(r"\[[^\]]*\]", " ", name or "")
+    key = re.sub(r"[\[\]{}]", " ", name or "")
     key = re.sub(r"\b(19|20)\d{2}\b", " ", key)
     key = re.sub(r"\([^)]*\)", " ", key)
     key = re.sub(r"\s+", " ", key).strip().lower()
     return f"{(artist or '').strip().lower()}|{key}"
+
+
+def _parse_torrent_title(title: str) -> dict:
+    """RuTracker «(жанры) [медиа] Исполнитель - Альбом (год) - год, FLAC (tracks+.cue), lossless»
+    → {artist, album, year, format, bitrate, lossless, genre, media}."""
+    t = (title or "").replace("<wbr>", "")
+    genre = media = None
+    rest = t
+    m = re.match(r"^\s*\(([^)]*)\)\s*(?:\[([^\]]+)\])?\s*(.*)$", t, re.DOTALL)
+    if m and m.group(1) and re.search(r"[a-zа-яё]", m.group(1), re.IGNORECASE):
+        genre = m.group(1).strip()
+        media = (m.group(2) or "").strip() or None
+        rest = m.group(3).strip()
+    fmt = bitrate = None
+    fm = re.search(r",\s*((?:FLAC|WavPack|WAVPack|APE|ALAC|MP3|AAC|OGG|Opus|WAV|DSD|DSF|DFF|SACD-R?|ISO|DTS|Dolby)[^,]*?)(?:,\s*(?:lossless|lossy))?\s*$",
+                   rest, re.IGNORECASE)
+    if fm:
+        spec = fm.group(1)
+        fm2 = re.match(r"(FLAC|WavPack|WAVPack|APE|ALAC|MP3|AAC|OGG|Opus|WAV|DSD|DSF|DFF|SACD|ISO|DTS)", spec, re.IGNORECASE)
+        fmt = fm2.group(1) if fm2 else None
+        bm = re.search(r"(24\s*/\s*(?:192|96|88\.2|88)|16\s*/\s*44\.1|16\s*/\s*44|DSD\s*(?:64|128|256)|\b(?:320|256|192|128)\s*kbps?)",
+                       spec, re.IGNORECASE)
+        if bm:
+            bitrate = re.sub(r"\s+", "", bm.group(1))
+        rest = rest[:fm.start()].rstrip(" ,;")
+    artist = album = None
+    am = re.split(r"\s+[-–—]\s+", rest, maxsplit=1)
+    if len(am) == 2:
+        artist = am[0].strip()
+        album = am[1].strip()
+    elif rest.strip():
+        album = rest.strip()
+        if re.match(r"^VA\b|^Various", rest.strip(), re.IGNORECASE):
+            artist = "Various Artists"
+    year = None
+    if album:
+        ym = re.search(r"\b(19|20)\d{2}\b", album)
+        if ym:
+            year = ym.group(0)
+    artist = re.sub(r"^\s*[\[\(\{]\s*(?:19|20)\d{2}\s*[\]\)\}]\s*", "", artist or "").strip()
+    a = album or ""
+    a = re.sub(r"[\[\(\{]\s*(?:19|20)\d{2}(?:[\s\-–—]*(?:19|20)\d{2})*\s*[\]\)\}]", " ", a)
+    a = re.sub(r"\s*,\s*\d+\s*CD.*$", "", a, flags=re.IGNORECASE)
+    a = re.sub(r"\s*\(\d+\s*CD[^)]*\)\s*$", "", a, flags=re.IGNORECASE)
+    a = re.sub(r"\s*[-–—]\s*(?:19|20)\d{2}\s*$", "", a)
+    album = re.sub(r"\s+", " ", a).strip(" -–—") or None
+    lossless = 0 if fmt and fmt.upper() in ("MP3", "AAC", "OGG", "OPUS") else (1 if fmt else None)
+    return {"artist": artist, "album": album, "year": year, "format": fmt,
+            "bitrate": bitrate, "lossless": lossless, "genre": genre, "media": media}
 
 
 def enrich_album(name: str) -> dict | None:
@@ -191,6 +242,26 @@ def enrich_album(name: str) -> dict | None:
         return {"artist": artist, "title": title, "cover_url": cover_url}
     except Exception:  # noqa: BLE001 — обогащение не должно ронять добавление
         return None
+
+
+def _enrich_covers(limit: int = 300) -> int:
+    """лениво тянет обложки для релизов каталога (MusicBrainz+CoverArtArchive), кэширует в catalog."""
+    with db() as c:
+        rows = c.execute(
+            "SELECT release_key, artist, album FROM catalog "
+            "WHERE artist IS NOT NULL AND album IS NOT NULL AND cover_url IS NULL "
+            "GROUP BY release_key LIMIT ?", (limit,)).fetchall()
+    n = 0
+    for r in rows:
+        q = " ".join(x for x in (r["artist"], r["album"]) if x)
+        meta = enrich_album(q)
+        if meta and meta.get("cover_url"):
+            with db() as c:
+                c.execute("UPDATE catalog SET cover_url=? WHERE release_key=?",
+                          (meta["cover_url"], r["release_key"]))
+                c.commit()
+            n += 1
+    return n
 
 
 # ---------- Prowlarr ----------
@@ -351,6 +422,54 @@ def catalog_sections():
         for k, v in FORUM_CATALOG.items()]}
 
 
+@app.get("/api/catalog/groups")
+def catalog_groups(forum_id: int | None = None, min_seeders: int = 0,
+                   lossless: bool | None = None, q: str | None = None,
+                   genre: str | None = None):
+    """раздачи, сгруппированные по релизу (release_key) → выбор качества (издания)."""
+    sql = "SELECT * FROM catalog WHERE 1=1"
+    params: list = []
+    if forum_id:
+        sql += " AND forum_id=?"
+        params.append(forum_id)
+    if min_seeders > 0:
+        sql += " AND seeders>=?"
+        params.append(min_seeders)
+    if lossless is not None:
+        sql += " AND lossless=?"
+        params.append(1 if lossless else 0)
+    if genre:
+        sql += " AND genre LIKE ?"
+        params.append(f"%{genre}%")
+    if q:
+        sql += " AND (title LIKE ? OR artist LIKE ? OR album LIKE ?)"
+        like = f"%{q}%"
+        params += [like, like, like]
+    with db() as c:
+        rows = c.execute(sql, params).fetchall()
+    groups: dict[str, dict] = {}
+    for r in rows:
+        rk = r["release_key"] or _release_key(r["artist"], r["title"])
+        g = groups.setdefault(rk, {
+            "release_key": rk, "artist": r["artist"], "album": r["album"],
+            "year": r["year"], "cover_url": r["cover_url"], "genre": r["genre"],
+            "editions": []})
+        if r["cover_url"] and not g["cover_url"]:
+            g["cover_url"] = r["cover_url"]
+        if r["genre"] and not g["genre"]:
+            g["genre"] = r["genre"]
+        g["editions"].append({
+            "t": r["t"], "title": r["title"], "format": r["format"],
+            "bitrate": r["bitrate"], "lossless": r["lossless"],
+            "seeders": r["seeders"], "leechers": r["leechers"],
+            "size": r["size"], "year": r["year"]})
+    out = sorted(groups.values(), key=lambda g: -max(e["seeders"] for e in g["editions"]))
+    for g in out:
+        g["editions"].sort(key=lambda e: -e["seeders"])
+        g["count"] = len(g["editions"])
+    return {"groups": out, "count": len(out)}
+
+
 @app.post("/api/catalog/refresh")
 def catalog_refresh(req: CatalogRefreshReq):
     crawled: list[dict] = []
@@ -360,19 +479,26 @@ def catalog_refresh(req: CatalogRefreshReq):
         return {"ok": True, "count": 0}
     now = int(time.time())
     with db() as c:
-        c.executemany(
-            """INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,lossless,year)
-               VALUES(:t,:forum_id,:title,:size,:seeders,:leechers,:crawled_at,:lossless,:year)
-               ON CONFLICT(t) DO UPDATE SET seeders=excluded.seeders,
-                   leechers=excluded.leechers, lossless=excluded.lossless,
-                   year=excluded.year, crawled_at=excluded.crawled_at""",
-            [{"t": r["t"], "forum_id": r["forum_id"], "title": r["title"],
-              "size": r["size"], "seeders": r["seeders"], "leechers": r["leechers"],
-              "crawled_at": now, "lossless": r.get("lossless"), "year": r.get("year")}
-             for r in crawled],
-        )
+        for r in crawled:
+            p = _parse_torrent_title(r["title"])
+            rk = _release_key(p["artist"], p["album"])
+            c.execute(
+                """INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
+                                       lossless,year,artist,album,format,bitrate,release_key,genre)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(t) DO UPDATE SET seeders=excluded.seeders,
+                       leechers=excluded.leechers, lossless=excluded.lossless,
+                       year=excluded.year, crawled_at=excluded.crawled_at,
+                       artist=excluded.artist, album=excluded.album,
+                       format=excluded.format, bitrate=excluded.bitrate,
+                       release_key=excluded.release_key, genre=excluded.genre""",
+                (r["t"], r["forum_id"], r["title"], r["size"], r["seeders"],
+                 r["leechers"], now, p["lossless"], p["year"], p["artist"],
+                 p["album"], p["format"], p["bitrate"], rk, p["genre"]),
+            )
         c.commit()
-    return {"ok": True, "count": len(crawled)}
+    enriched = _enrich_covers()
+    return {"ok": True, "count": len(crawled), "covers": enriched}
 
 
 def _rutracker_cookies() -> list[dict]:

@@ -1,0 +1,53 @@
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: ['./index.html', './src/**/*.{js,jsx}'],
+  theme: {
+    extend: {
+      colors: {
+        'bg-base': '#0A0B0E',
+        'bg-main': '#0E1014',
+        'surface-1': '#15171D',
+        'surface-2': '#1B1E26',
+        'surface-3': '#232733',
+        'surface-inset': '#0B0C10',
+        'border-subtle': '#262A33',
+        'border-strong': '#3A3F4B',
+        overlay: '#050608B8',
+        primary: '#1FDB64',
+        'primary-hover': '#4CE682',
+        'primary-pressed': '#17B552',
+        'primary-tint': '#1FDB641F',
+        'on-primary': '#04120A',
+        'text-primary': '#F4F6F9',
+        'text-secondary': '#A7ADBA',
+        'text-muted': '#6E7482',
+        'text-disabled': '#484D58',
+        success: '#3ECF8E',
+        warning: '#FFB224',
+        danger: '#F2485B',
+        info: '#4C9AFF',
+      },
+      fontFamily: {
+        ui: ['Inter', 'system-ui', '-apple-system', '"Segoe UI"', 'Roboto', 'sans-serif'],
+        display: ['"Space Grotesk"', '"Inter"', 'sans-serif'],
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+      },
+      borderRadius: {
+        xs: '4px',
+        sm: '6px',
+        md: '8px',
+        lg: '12px',
+        xl: '16px',
+      },
+      boxShadow: {
+        '1': '0 1px 2px rgb(0 0 0 / .40)',
+        '2': '0 4px 16px rgb(0 0 0 / .45)',
+        '3': '0 8px 24px rgb(0 0 0 / .50), 0 2px 6px rgb(0 0 0 / .40)',
+        '4': '0 16px 48px rgb(0 0 0 / .60)',
+        player: '0 -4px 16px rgb(0 0 0 / .45)',
+        'focus-ring': '0 0 0 2px #0A0B0E, 0 0 0 4px #1FDB64',
+      },
+    },
+  },
+  plugins: [],
+}
