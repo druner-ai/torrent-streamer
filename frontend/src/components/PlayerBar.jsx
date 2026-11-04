@@ -200,14 +200,14 @@ function SleepMenu({ sleepMinutes, onSleep }) {
 
 function EndpointSelect({ onNotify }) {
   const [open, setOpen] = useState(false)
-  const [devices, setDevices] = useState([])
-  const [current, setCurrent] = useState(null)
+  const [eps, setEps] = useState([])
+  const [active, setActive] = useState(null)
 
   async function load() {
     try {
       const d = await api.endpoints()
-      setDevices(d.available_devices || [])
-      setCurrent(d.current_device || null)
+      setEps(d.endpoints || [])
+      setActive(d.active || null)
     } catch {
       /* endpoint недоступен — оставляем пусто */
     }
@@ -217,16 +217,30 @@ function EndpointSelect({ onNotify }) {
     load()
   }, [])
 
-  async function choose(device) {
-    setOpen(false)
+  async function pickEndpoint(name) {
     try {
-      await api.selectEndpoint(device)
-      setCurrent(device)
-      onNotify?.(`Выход: ${device}`, 'success')
+      await api.selectEndpoint(name, undefined)
+      setActive(name)
+      onNotify?.(`Endpoint: ${name}`, 'success')
+      load()
     } catch (e) {
       onNotify?.(e.message, 'error')
     }
   }
+
+  async function pickDevice(epName, device) {
+    setOpen(false)
+    try {
+      await api.selectEndpoint(epName, device)
+      onNotify?.(`${epName} → ${device}`, 'success')
+      load()
+    } catch (e) {
+      onNotify?.(e.message, 'error')
+    }
+  }
+
+  const activeEp = eps.find((e) => e.active) || eps[0]
+  const label = activeEp ? activeEp.current_device || activeEp.name : 'Выход'
 
   return (
     <div className="relative">
@@ -236,31 +250,53 @@ function EndpointSelect({ onNotify }) {
           load()
           setOpen((v) => !v)
         }}
-        title={`Аудиовыход: ${current || '—'}`}
+        title={`Аудиовыход: ${label}`}
         className="flex items-center gap-1.5 rounded-sm px-2 py-1 text-[12px] text-text-muted transition-colors hover:bg-surface-2 hover:text-text-primary"
       >
         <MonitorSpeaker size={18} />
-        <span className="max-w-[120px] truncate">{current || 'Выход'}</span>
+        <span className="max-w-[120px] truncate">{label}</span>
       </button>
 
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-full right-0 z-20 mb-2 w-56 overflow-hidden rounded-lg border border-border-subtle bg-surface-3 shadow-3">
-            {devices.length === 0 ? (
-              <div className="px-3 py-2 text-[12px] text-text-muted">Нет устройств</div>
+          <div className="absolute bottom-full right-0 z-20 mb-2 max-h-80 w-64 overflow-y-auto rounded-lg border border-border-subtle bg-surface-3 shadow-3">
+            {eps.length === 0 ? (
+              <div className="px-3 py-2 text-[12px] text-text-muted">Нет эндпоинтов</div>
             ) : (
-              devices.map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  onClick={() => choose(d)}
-                  className={`block w-full truncate px-3 py-2 text-left text-[13px] transition-colors hover:bg-surface-2 ${
-                    d === current ? 'text-primary' : 'text-text-secondary'
-                  }`}
-                >
-                  {d}
-                </button>
+              eps.map((ep) => (
+                <div key={ep.name}>
+                  <button
+                    type="button"
+                    onClick={() => pickEndpoint(ep.name)}
+                    className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-[12px] font-semibold uppercase tracking-wider transition-colors hover:bg-surface-2 ${
+                      ep.active ? 'text-primary' : 'text-text-secondary'
+                    }`}
+                  >
+                    <span className="truncate">{ep.name}</span>
+                    {ep.error ? (
+                      <span className="text-[10px] font-normal normal-case text-danger">{ep.error}</span>
+                    ) : (
+                      ep.active && <span className="text-primary">●</span>
+                    )}
+                  </button>
+                  {(ep.available_devices || []).length === 0 && !ep.error && (
+                    <div className="px-5 py-1 text-[12px] text-text-muted">нет устройств</div>
+                  )}
+                  {(ep.available_devices || []).map((dev) => (
+                    <button
+                      key={dev}
+                      type="button"
+                      onClick={() => pickDevice(ep.name, dev)}
+                      className={`block w-full truncate px-5 py-1.5 text-left text-[13px] transition-colors hover:bg-surface-2 ${
+                        ep.active && dev === ep.current_device ? 'text-primary' : 'text-text-secondary'
+                      }`}
+                    >
+                      {dev}
+                      {ep.active && dev === ep.current_device ? ' ✓' : ''}
+                    </button>
+                  ))}
+                </div>
               ))
             )}
           </div>

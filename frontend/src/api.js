@@ -63,7 +63,7 @@ export const api = {
   jumpQueue: (pos) => post(`/api/queue/jump?pos=${pos}`),
 
   endpoints: () => request('/api/endpoints'),
-  selectEndpoint: (device) => post('/api/endpoints/select', { device }),
+  selectEndpoint: (endpoint, device) => post('/api/endpoints/select', { endpoint, device }),
 
   player: () => request('/api/player'),
   playerCmd: (cmd) => post(`/api/player/${cmd}`),

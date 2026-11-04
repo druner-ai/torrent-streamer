@@ -34,8 +34,77 @@ MPD_HOST = os.getenv("MPD_HOST", "127.0.0.1")
 MPD_PORT = int(os.getenv("MPD_PORT", "6600"))
 OAAT_TARGET = os.getenv("OAAT_TARGET", "192.168.31.215:9740")
 TS_CONTROLLER_SOCK = os.getenv("TS_CONTROLLER_SOCK", "/tmp/ts-controller.sock")
-# Web UI OAAT-эндпоинта (control 9740 + 1) — для выбора аудио-устройства на MacBook.
-OAAT_WEB = "http://" + OAAT_TARGET.rsplit(":", 1)[0] + ":9741"
+TS_CONTROLLER_BIN = os.getenv("TS_CONTROLLER_BIN", "ts-controller")
+
+
+# ---------- мульти-эндпоинт: имя=host:port через запятую ----------
+def _parse_endpoints(raw: str) -> dict:
+    eps = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if "=" in part:
+            name, addr = part.split("=", 1)
+            name, addr = name.strip(), addr.strip()
+            if name and addr:
+                eps[name] = addr
+    return eps
+
+
+OAAT_ENDPOINTS = _parse_endpoints(os.getenv("OAAT_ENDPOINTS", ""))
+if not OAAT_ENDPOINTS:
+    OAAT_ENDPOINTS = {"MacBook": OAAT_TARGET}
+ACTIVE_EP_FILE = os.getenv("ACTIVE_EP_FILE", "/data/active_endpoint")
+
+
+def _ep_web(name: str) -> str:
+    """Web UI OAAT-эндпоинта (control 9740 + 1) — список/смена аудио-устройства."""
+    return "http://" + OAAT_ENDPOINTS[name].rsplit(":", 1)[0] + ":9741"
+
+
+def _active_ep_name() -> str:
+    try:
+        name = Path(ACTIVE_EP_FILE).read_text().strip()
+        if name in OAAT_ENDPOINTS:
+            return name
+    except OSError:
+        pass
+    return next(iter(OAAT_ENDPOINTS))
+
+
+def _set_active_ep(name: str) -> None:
+    try:
+        Path(ACTIVE_EP_FILE).write_text(name)
+    except OSError:
+        pass
+
+
+# ts-controller — один процесс, держит соединение с АКТИВНЫМ endpoint'ом.
+_TS_PROC = None
+
+
+def _stop_ts() -> None:
+    global _TS_PROC
+    if _TS_PROC and _TS_PROC.poll() is None:
+        _TS_PROC.terminate()
+        try:
+            _TS_PROC.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            _TS_PROC.kill()
+    _TS_PROC = None
+
+
+def _start_ts(target: str) -> None:
+    global _TS_PROC
+    _stop_ts()
+    try:
+        _TS_PROC = subprocess.Popen(
+            [TS_CONTROLLER_BIN, "--target", target, "--socket", TS_CONTROLLER_SOCK],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError as e:
+        # нет бинаря/права — деградируем: приложение живёт, аудио недоступно.
+        _TS_PROC = None
+        print(f"[ts-controller] не удалось запустить ({e}); аудио недоступно", flush=True)
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
 DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 API_KEY = os.getenv("API_KEY", "")
@@ -48,7 +117,15 @@ COVER_CACHE_DIR = os.getenv("COVER_CACHE_DIR", "/data/covers")
 AUDIO_EXT = {".flac", ".mp3", ".dsf", ".dff", ".wav", ".m4a", ".aiff", ".aif", ".ape", ".ogg", ".opus", ".alac"}
 MUSICBRAINZ_UA = "torrent-streamer/0.1 (druner@gmail.com)"
 
-app = FastAPI(title="torrent-streamer")
+@contextlib.asynccontextmanager
+async def lifespan(_app):
+    # ts-controller стартует с активным endpoint'ом (persist в /data/active_endpoint).
+    _start_ts(OAAT_ENDPOINTS[_active_ep_name()])
+    yield
+    _stop_ts()
+
+
+app = FastAPI(title="torrent-streamer", lifespan=lifespan)
 
 # ---------- OAAT (ts-controller, persistent) ----------
 _OAAT_ALBUM_ID = None
@@ -1153,33 +1230,53 @@ def player():
 
 
 class EndpointSelectReq(BaseModel):
-    device: str
+    endpoint: str | None = None
+    device: str | None = None
+
+
+def _ep_status(name: str) -> dict:
+    """Статус конкретного endpoint'а (устройства + играет ли)."""
+    try:
+        r = requests.get(f"{_ep_web(name)}/api/status", timeout=3)
+        r.raise_for_status()
+        d = r.json()
+        return {"available_devices": d.get("available_devices", []),
+                "current_device": d.get("current_device"),
+                "connected": d.get("connected", False),
+                "playing": d.get("playing", False)}
+    except requests.RequestException:
+        return {"available_devices": [], "current_device": None,
+                "connected": False, "playing": False, "error": "недоступен"}
 
 
 @app.get("/api/endpoints")
 def endpoints():
-    """Список аудио-выходов endpoint'а (MacBook) + текущий выбор."""
-    try:
-        r = requests.get(f"{OAAT_WEB}/api/status", timeout=5)
-        r.raise_for_status()
-        d = r.json()
-        return {"current_device": d.get("current_device"),
-                "available_devices": d.get("available_devices", []),
-                "connected": d.get("connected", False),
-                "playing": d.get("playing", False)}
-    except requests.RequestException as e:
-        return JSONResponse({"detail": f"endpoint недоступен: {e}"}, status_code=502)
+    """Все endpoint'ы + их аудио-устройства + активный."""
+    active = _active_ep_name()
+    eps = []
+    for name, addr in OAAT_ENDPOINTS.items():
+        ep = {"name": name, "control": addr, "active": name == active}
+        ep.update(_ep_status(name))
+        eps.append(ep)
+    return {"active": active, "endpoints": eps}
 
 
 @app.post("/api/endpoints/select")
 def endpoints_select(req: EndpointSelectReq):
-    """Переключить аудио-устройство endpoint'а (на лету)."""
-    try:
-        r = requests.post(f"{OAAT_WEB}/api/device", json={"device": req.device}, timeout=5)
-        r.raise_for_status()
-        return r.json()
-    except requests.RequestException as e:
-        return JSONResponse({"detail": f"endpoint недоступен: {e}"}, status_code=502)
+    """Переключить активный endpoint (перезапуск ts-controller) и/или устройство на нём."""
+    if req.endpoint and req.endpoint not in OAAT_ENDPOINTS:
+        raise HTTPException(400, f"неизвестный endpoint: {req.endpoint}")
+    if req.endpoint:
+        _set_active_ep(req.endpoint)
+        _start_ts(OAAT_ENDPOINTS[req.endpoint])
+    if req.device:
+        try:
+            r = requests.post(f"{_ep_web(_active_ep_name())}/api/device",
+                              json={"device": req.device}, timeout=5)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            return JSONResponse({"detail": f"endpoint недоступен: {e}"}, status_code=502)
+    return {"active": _active_ep_name(), "ok": True}
 
 
 @app.post("/api/player/{cmd}")
