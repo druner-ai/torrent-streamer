@@ -1,10 +1,11 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from './api.js'
 import { usePolling } from './hooks/usePolling.js'
 import AlbumModal from './components/AlbumModal.jsx'
 import BottomNav from './components/BottomNav.jsx'
 import PlayerBar from './components/PlayerBar.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
+import SetupWizard from './components/SetupWizard.jsx'
 import Sidebar from './components/Sidebar.jsx'
 import Toast from './components/Toast.jsx'
 import TopBar from './components/TopBar.jsx'
@@ -26,6 +27,18 @@ export default function App() {
   const [libraryQuery, setLibraryQuery] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // null = мастер не показываем; массив missing = показать шаг за шагом
+  const [setupMissing, setSetupMissing] = useState(null)
+
+  useEffect(() => {
+    if (sessionStorage.getItem('sv_setup_skipped')) return
+    api
+      .setupStatus()
+      .then((s) => {
+        if (!s.configured) setSetupMissing(s.missing)
+      })
+      .catch(() => {})
+  }, [])
 
   const pushToast = useCallback((message, type = 'error') => {
     const id = `${Date.now()}-${Math.random()}`
@@ -299,6 +312,22 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         notify={pushToast}
       />
+
+      {setupMissing && (
+        <SetupWizard
+          missing={setupMissing}
+          notify={pushToast}
+          onSkip={() => {
+            sessionStorage.setItem('sv_setup_skipped', '1')
+            setSetupMissing(null)
+          }}
+          onDone={() => {
+            sessionStorage.setItem('sv_setup_skipped', '1')
+            setSetupMissing(null)
+            pushToast('Первичная настройка завершена', 'success')
+          }}
+        />
+      )}
 
       <Toast toasts={toasts} onDismiss={dismissToast} />
     </div>

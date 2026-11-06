@@ -1,4 +1,5 @@
 """Базовые тесты backend без реальных MPD/qbittorrent (мокаем QB и mpd_cmd)."""
+import base64
 import os
 import sqlite3
 
@@ -755,6 +756,59 @@ def test_settings_save_get(tmp_path):
         assert body["rutracker_login"] == "user1"
         assert body["rutracker_password_set"] is True
         assert "s3cret" not in str(body)  # пароль наружу не отдаём
+
+
+def test_settings_qbt_and_frontend_auth(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        r = client.post("/api/settings", json={"qbt_url": "http://qb:8080",
+                                               "qbt_user": "admin2",
+                                               "qbt_password": "qp@ss",
+                                               "frontend_auth": "andrei:pw123"})
+        assert r.status_code == 200
+        # после сохранения frontend_auth middleware требует Basic — проверяем с кредами
+        creds = "Basic " + base64.b64encode(b"andrei:pw123").decode()
+        body = client.get("/api/settings", headers={"Authorization": creds}).json()
+        assert body["qbt_url"] == "http://qb:8080"
+        assert body["qbt_user"] == "admin2"
+        assert body["qbt_password_set"] is True
+        assert body["frontend_auth_set"] is True
+        assert "qp@ss" not in str(body) and "pw123" not in str(body)
+        # QB-хелперы предпочитают settings перед env
+        assert main._qbt_url() == "http://qb:8080"
+        assert main._qbt_user() == "admin2"
+        assert main._qbt_pass() == "qp@ss"
+
+
+def test_settings_frontend_auth_bad_format(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        r = client.post("/api/settings", json={"frontend_auth": "no-colon"})
+        assert r.status_code == 400
+
+
+def test_setup_status_reports_missing(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), \
+            patch.object(main, "RUTRACKER_LOGIN", ""), \
+            patch.object(main, "RUTRACKER_PASSWORD", ""), \
+            patch.object(main, "OAAT_ENDPOINTS", {}), \
+            patch.object(main, "_mdns_services", return_value={}), \
+            patch.object(main, "QB", side_effect=OSError("down")):
+        body = client.get("/api/setup/status").json()
+        assert body["configured"] is False
+        assert set(body["missing"]) == {"rutracker", "endpoint", "qbittorrent"}
+
+
+def test_setup_status_configured(tmp_path):
+    class _QB:
+        def info(self):
+            return []
+
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), \
+            patch.object(main, "RUTRACKER_LOGIN", "u"), \
+            patch.object(main, "RUTRACKER_PASSWORD", "p"), \
+            patch.object(main, "OAAT_ENDPOINTS", {"NUC": ["127.0.0.1:9740"]}), \
+            patch.object(main, "QB", _QB):
+        body = client.get("/api/setup/status").json()
+        assert body == {"configured": True, "missing": []}
 
 
 def test_catalog_tree_save_get(tmp_path):

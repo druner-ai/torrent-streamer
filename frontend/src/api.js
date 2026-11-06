@@ -63,6 +63,7 @@ export const api = {
   settings: () => request('/api/settings'),
   saveSettings: (data) => post('/api/settings', data),
   settingsTest: () => post('/api/settings/test'),
+  setupStatus: () => request('/api/setup/status'),
 
   queue: () => request('/api/queue'),
   addToQueue: (albumId, trackIndex, mode) =>

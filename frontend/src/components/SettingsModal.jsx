@@ -9,6 +9,12 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [qbtUrl, setQbtUrl] = useState('')
+  const [qbtUser, setQbtUser] = useState('')
+  const [qbtPass, setQbtPass] = useState('')
+  const [qbtPassSet, setQbtPassSet] = useState(false)
+  const [adminAuth, setAdminAuth] = useState('')
+  const [adminAuthSet, setAdminAuthSet] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -20,6 +26,10 @@ export default function SettingsModal({ open, onClose, notify }) {
         if (!alive) return
         setLogin(d.rutracker_login || '')
         setPasswordSet(d.rutracker_password_set)
+        setQbtUrl(d.qbt_url || '')
+        setQbtUser(d.qbt_user || '')
+        setQbtPassSet(d.qbt_password_set)
+        setAdminAuthSet(d.frontend_auth_set)
       })
       .catch((e) => notify(e.message, 'error'))
       .finally(() => alive && setLoading(false))
@@ -34,8 +44,14 @@ export default function SettingsModal({ open, onClose, notify }) {
       await api.saveSettings({
         rutracker_login: login,
         rutracker_password: password || undefined,
+        qbt_url: qbtUrl || undefined,
+        qbt_user: qbtUser || undefined,
+        qbt_password: qbtPass || undefined,
+        frontend_auth: adminAuth || undefined,
       })
       setPassword('')
+      setQbtPass('')
+      setAdminAuth('')
       setPasswordSet(true)
       notify('Настройки сохранены', 'success')
       onClose()
@@ -117,6 +133,57 @@ export default function SettingsModal({ open, onClose, notify }) {
                 {testing && <Loader2 size={13} className="animate-spin" />}
                 Проверить логин
               </button>
+            </div>
+
+            <div>
+              <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-text-muted">
+                qBittorrent
+              </h3>
+              <label className="mb-1 block text-[12.5px] text-text-secondary">Адрес</label>
+              <input
+                value={qbtUrl}
+                onChange={(e) => setQbtUrl(e.target.value)}
+                placeholder="http://127.0.0.1:8080"
+                className="mb-3 h-9 w-full rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
+              />
+              <label className="mb-1 block text-[12.5px] text-text-secondary">Логин</label>
+              <input
+                value={qbtUser}
+                onChange={(e) => setQbtUser(e.target.value)}
+                placeholder="admin"
+                className="mb-3 h-9 w-full rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
+              />
+              <label className="mb-1 block text-[12.5px] text-text-secondary">
+                Пароль {qbtPassSet ? '(задан)' : ''}
+              </label>
+              <input
+                type="password"
+                value={qbtPass}
+                onChange={(e) => setQbtPass(e.target.value)}
+                placeholder={qbtPassSet ? '•••••••• (оставьте пустым, чтобы не менять)' : 'пароль'}
+                autoComplete="new-password"
+                className="h-9 w-full rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-text-muted">
+                Доступ (Basic Auth)
+              </h3>
+              <label className="mb-1 block text-[12.5px] text-text-secondary">
+                Креды user:pass {adminAuthSet ? '(заданы)' : '(выключен)'}
+              </label>
+              <input
+                type="password"
+                value={adminAuth}
+                onChange={(e) => setAdminAuth(e.target.value)}
+                placeholder={adminAuthSet ? '•••••••• (оставьте пустым, чтобы не менять)' : 'user:pass'}
+                autoComplete="new-password"
+                className="h-9 w-full rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
+              />
+              <p className="mt-1 text-[11px] text-text-muted">
+                После сохранения браузер запросит новые креды.
+              </p>
             </div>
           </div>
         )}

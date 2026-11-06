@@ -340,8 +340,12 @@ FRONTEND_AUTH = os.getenv("FRONTEND_AUTH", "")  # "user:pass" — пусто = �
 
 @app.middleware("http")
 async def basic_auth_middleware(request, call_next):
-    if FRONTEND_AUTH and request.url.path != "/api/health":
-        expected = "Basic " + base64.b64encode(FRONTEND_AUTH.encode()).decode()
+    try:
+        auth = _get_setting("frontend_auth") or FRONTEND_AUTH
+    except Exception:  # noqa: BLE001 — БД недоступна → только env-креды
+        auth = FRONTEND_AUTH
+    if auth and request.url.path != "/api/health":
+        expected = "Basic " + base64.b64encode(auth.encode()).decode()
         if request.headers.get("Authorization") != expected:
             return JSONResponse({"detail": "авторизация требуется"}, status_code=401,
                                 headers={"WWW-Authenticate": 'Basic realm="SoundVault"'})
@@ -447,6 +451,18 @@ def _rutracker_login() -> str:
 
 def _rutracker_password() -> str:
     return _get_setting("rutracker_password") or RUTRACKER_PASSWORD
+
+
+def _qbt_url() -> str:
+    return _get_setting("qbt_url") or QBT_URL
+
+
+def _qbt_user() -> str:
+    return _get_setting("qbt_user") or QBT_USER
+
+
+def _qbt_pass() -> str:
+    return _get_setting("qbt_password") or QBT_PASS
 
 
 # ---------- MusicBrainz ----------
@@ -787,13 +803,21 @@ def catalog_sections():
 class SettingsReq(BaseModel):
     rutracker_login: str | None = None
     rutracker_password: str | None = None
+    qbt_url: str | None = None
+    qbt_user: str | None = None
+    qbt_password: str | None = None
+    frontend_auth: str | None = None
 
 
 @app.get("/api/settings")
 def settings():
-    """логин/пароль трекеров (пароль не отдаём, только флаг)."""
+    """логин/пароль трекеров и qBittorrent (пароли не отдаём, только флаги)."""
     return {"rutracker_login": _rutracker_login(),
-            "rutracker_password_set": bool(_rutracker_password())}
+            "rutracker_password_set": bool(_rutracker_password()),
+            "qbt_url": _qbt_url(),
+            "qbt_user": _qbt_user(),
+            "qbt_password_set": bool(_qbt_pass()),
+            "frontend_auth_set": bool(_get_setting("frontend_auth") or FRONTEND_AUTH)}
 
 
 @app.post("/api/settings")
@@ -802,6 +826,17 @@ def settings_save(req: SettingsReq):
         _set_setting("rutracker_login", req.rutracker_login.strip())
     if req.rutracker_password is not None and req.rutracker_password.strip():
         _set_setting("rutracker_password", req.rutracker_password.strip())
+    if req.qbt_url is not None and req.qbt_url.strip():
+        _set_setting("qbt_url", req.qbt_url.strip())
+    if req.qbt_user is not None and req.qbt_user.strip():
+        _set_setting("qbt_user", req.qbt_user.strip())
+    if req.qbt_password is not None and req.qbt_password.strip():
+        _set_setting("qbt_password", req.qbt_password.strip())
+    if req.frontend_auth is not None:
+        v = req.frontend_auth.strip()
+        if v and ":" not in v:
+            raise HTTPException(400, "формат кредов админки: user:pass")
+        _set_setting("frontend_auth", v)
     return {"ok": True}
 
 
@@ -817,6 +852,21 @@ def settings_test():
     has_session = any(c.get("name") == "bb_session" for c in cookies)
     return {"ok": has_session,
             "error": "" if has_session else "логин не прошёл (нет сессии bb_session)"}
+
+
+@app.get("/api/setup/status")
+def setup_status():
+    """Мастер первого запуска: какие шаги ещё не настроены."""
+    missing = []
+    if not (_rutracker_login() and _rutracker_password()):
+        missing.append("rutracker")
+    if not OAAT_ENDPOINTS and not _mdns_services():
+        missing.append("endpoint")
+    try:
+        QB().info()
+    except Exception:  # noqa: BLE001 — qbt недоступен/не авторизован → шаг не готов
+        missing.append("qbittorrent")
+    return {"configured": not missing, "missing": missing}
 
 
 def _split_genres(genre: str | None) -> list[str]:
@@ -1051,18 +1101,18 @@ class QB:
         self._login()
 
     def _login(self):
-        self.s.post(f"{QBT_URL}/api/v2/auth/login",
-                    data={"username": QBT_USER, "password": QBT_PASS})
+        self.s.post(f"{_qbt_url()}/api/v2/auth/login",
+                    data={"username": _qbt_user(), "password": _qbt_pass()})
 
     def add(self, link: str):
-        r = self.s.post(f"{QBT_URL}/api/v2/torrents/add",
+        r = self.s.post(f"{_qbt_url()}/api/v2/torrents/add",
                         data={"urls": link, "sequentialDownload": "true",
                               "firstLastPiecePrio": "true"})
         r.raise_for_status()
 
     def add_file(self, path: str):
         with open(path, "rb") as f:
-            r = self.s.post(f"{QBT_URL}/api/v2/torrents/add",
+            r = self.s.post(f"{_qbt_url()}/api/v2/torrents/add",
                             data={"sequentialDownload": "true",
                                   "firstLastPiecePrio": "true"},
                             files={"torrents": (os.path.basename(path), f,
@@ -1070,17 +1120,17 @@ class QB:
         r.raise_for_status()
 
     def delete(self, hash: str):
-        r = self.s.post(f"{QBT_URL}/api/v2/torrents/delete",
+        r = self.s.post(f"{_qbt_url()}/api/v2/torrents/delete",
                         data={"hashes": hash, "deleteFiles": "false"})
         r.raise_for_status()
 
     def info(self):
-        r = self.s.get(f"{QBT_URL}/api/v2/torrents/info")
+        r = self.s.get(f"{_qbt_url()}/api/v2/torrents/info")
         r.raise_for_status()
         return r.json()
 
     def files(self, hash_: str):
-        r = self.s.get(f"{QBT_URL}/api/v2/torrents/files", params={"hash": hash_})
+        r = self.s.get(f"{_qbt_url()}/api/v2/torrents/files", params={"hash": hash_})
         r.raise_for_status()
         return r.json()
 
@@ -1099,7 +1149,7 @@ class QB:
                 prios[f["index"]] = 6 if enable else 0  # 6 = high priority
             else:
                 prios[f["index"]] = 0  # don't download non-audio
-        self.s.post(f"{QBT_URL}/api/v2/torrents/filePrio",
+        self.s.post(f"{_qbt_url()}/api/v2/torrents/filePrio",
                     data={"hash": hash_, "priority": "|".join(str(prios.get(f["index"], 0)) for f in files)})
 
     def prioritize_window(self, hash_: str, window: set, audio_names: set):
@@ -1114,7 +1164,7 @@ class QB:
                 prios[f["index"]] = 1
             else:
                 prios[f["index"]] = 0
-        self.s.post(f"{QBT_URL}/api/v2/torrents/filePrio",
+        self.s.post(f"{_qbt_url()}/api/v2/torrents/filePrio",
                     data={"hash": hash_, "priority": "|".join(str(prios.get(f["index"], 0)) for f in files)})
 
 # ---------- MPD ----------
