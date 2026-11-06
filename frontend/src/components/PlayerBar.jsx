@@ -105,6 +105,7 @@ function SeekSlider({ player, onSeek }) {
 function VolumeSlider({ player, onVolume }) {
   const [vol, setVol] = useState(100)
   const [dragging, setDragging] = useState(false)
+  const [lastVol, setLastVol] = useState(100)
 
   useEffect(() => {
     if (!dragging && player.volume != null) setVol(Number(player.volume))
@@ -118,7 +119,9 @@ function VolumeSlider({ player, onVolume }) {
       <button
         type="button"
         onClick={() => {
-          const next = muted ? 100 : 0
+          // unmute — на прежний уровень, а не всегда на 100
+          const next = muted ? lastVol || 100 : 0
+          if (!muted) setLastVol(vol)
           setVol(next)
           onVolume(next)
         }}
@@ -137,7 +140,9 @@ function VolumeSlider({ player, onVolume }) {
         style={{ '--fill-pct': `${vol}%` }}
         onChange={(e) => {
           setDragging(true)
-          setVol(Number(e.target.value))
+          const v = Number(e.target.value)
+          setVol(v)
+          if (v > 0) setLastVol(v)
         }}
         onPointerUp={(e) => {
           setDragging(false)
@@ -395,10 +400,14 @@ export default function PlayerBar({
 
       {/* Mobile mini player */}
       {hasTrack && (
-        <button
-          type="button"
+        <div
+          role="button"
+          tabIndex={0}
           onClick={() => setMobileOpen(true)}
-          className="fixed inset-x-0 bottom-14 z-30 flex h-14 items-center gap-3 border-t border-border-subtle bg-surface-1 px-3 shadow-player md:hidden"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') setMobileOpen(true)
+          }}
+          className="fixed inset-x-0 bottom-14 z-30 flex h-14 cursor-pointer items-center gap-3 border-t border-border-subtle bg-surface-1 px-3 shadow-player md:hidden"
         >
           <div className="absolute inset-x-0 top-0 h-0.5 bg-surface-inset">
             <div
@@ -417,9 +426,9 @@ export default function PlayerBar({
               {formatTime(player.elapsed || 0)} / {formatTime(player.duration || 0)}
             </span>
           </span>
-          <span
-            role="button"
-            tabIndex={0}
+          <button
+            type="button"
+            aria-label={player.state === 'playing' ? 'Пауза' : 'Играть'}
             onClick={(e) => {
               e.stopPropagation()
               onCmd(player.state === 'playing' ? 'pause' : 'play')
@@ -431,10 +440,10 @@ export default function PlayerBar({
             ) : (
               <Play size={20} className="ml-0.5 fill-current" />
             )}
-          </span>
-          <span
-            role="button"
-            tabIndex={0}
+          </button>
+          <button
+            type="button"
+            aria-label="Следующий трек"
             onClick={(e) => {
               e.stopPropagation()
               onCmd('next')
@@ -442,8 +451,8 @@ export default function PlayerBar({
             className="flex h-10 w-10 items-center justify-center text-text-secondary"
           >
             <SkipForward size={20} className="fill-current" />
-          </span>
-        </button>
+          </button>
+        </div>
       )}
 
       {/* Mobile expanded sheet */}

@@ -213,6 +213,14 @@ def _ep_watchdog() -> None:
         with contextlib.suppress(Exception):
             name = _active_ep_name()
             addr = _resolve_ep(name)  # форс-резолв, минуя TTL-кэш
+            # контроллер умер (crash/kill) — перезапускаем на текущем адресе,
+            # иначе плеер навсегда останется в «stop» до рестарта бэкенда
+            if _TS_PROC is not None and _TS_PROC.poll() is not None:
+                if addr:
+                    _start_ts(addr)
+                    last = addr
+                pending = None
+                continue
             if not addr or addr == last:
                 pending = None
                 continue
@@ -262,6 +270,7 @@ _OAAT_FORMAT = None
 _QUEUE = []          # очередь воспроизведения: [{"aid": int, "idx": int}, ...]
 _QUEUE_POS = -1      # позиция текущего трека в очереди; -1 = очереди нет
 _SLEEP_TIMER = None  # таймер сна (threading.Timer или None)
+_SLEEP_MINUTES = None  # установленное значение таймера — отдаётся в GET /api/player
 
 # ---------- защита API ключом (опционально) ----------
 @app.middleware("http")
@@ -1636,6 +1645,18 @@ def _predecode(aid: int, idx: int, abs_path: str):
     threading.Thread(target=job, daemon=True).start()
 
 
+def _wait_predecode(aid: int, idx: int, timeout: float = 120.0) -> None:
+    """Дождаться окончания фонового декодирования (aid, idx), если оно идёт.
+    Без этого синхронный fallback запускает второй ffmpeg на тот же файл, а
+    фоновый os.replace подменяет WAV прямо во время стриминга контроллером."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _DECODE_LOCK:
+            if (aid, idx) not in _DECODE_JOBS:
+                return
+        time.sleep(0.25)
+
+
 def _start_track(aid, idx, offset=0.0):
     global _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_TRACK_NAME, _OAAT_TRACK_TITLE
     global _OAAT_DURATION, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL, _OAAT_FORMAT
@@ -1659,6 +1680,10 @@ def _start_track(aid, idx, offset=0.0):
     # через ffmpeg в lossless PCM; перемотку делает сам контроллер (без -ss).
     if Path(abs_path).suffix.lower() != ".wav":
         stream_path = _wav_path(aid, idx)
+        if not (os.path.exists(stream_path) and os.path.getsize(stream_path) > 0):
+            # этот трек уже может декодироваться в фоне — дожидаемся, а не
+            # запускаем второй ffmpeg (двойная нагрузка + подмена WAV на лету)
+            _wait_predecode(aid, idx)
         if not (os.path.exists(stream_path) and os.path.getsize(stream_path) > 0):
             # не успели пред-декодировать — декодируем синхронно (fallback)
             conv = subprocess.run(
@@ -1735,7 +1760,9 @@ def player_seek(position: float):
 def player_volume(level: int):
     global _OAAT_VOLUME
     level = max(0, min(100, level))
-    _ts_cmd({"cmd": "volume", "level": level})
+    resp = _ts_cmd({"cmd": "volume", "level": level})
+    if not resp.get("ok"):
+        raise HTTPException(500, f"контроллер: {resp.get('error', 'нет ответа')}")
     _OAAT_VOLUME = level
     return {"ok": True, "volume": level}
 
@@ -1743,22 +1770,25 @@ def player_volume(level: int):
 @app.post("/api/player/sleep")
 def player_sleep(minutes: int):
     """Таймер сна: остановить через N минут (0 — отменить)."""
-    global _SLEEP_TIMER
+    global _SLEEP_TIMER, _SLEEP_MINUTES
     if _SLEEP_TIMER:
         _SLEEP_TIMER.cancel()
         _SLEEP_TIMER = None
     if minutes <= 0:
+        _SLEEP_MINUTES = None
         return {"ok": True, "sleep": None}
 
     def _do_stop():
-        global _SLEEP_TIMER
+        global _SLEEP_TIMER, _SLEEP_MINUTES
         _SLEEP_TIMER = None
+        _SLEEP_MINUTES = None
         with contextlib.suppress(Exception):
             player_cmd("stop")
 
     _SLEEP_TIMER = threading.Timer(minutes * 60, _do_stop)
     _SLEEP_TIMER.daemon = True
     _SLEEP_TIMER.start()
+    _SLEEP_MINUTES = minutes
     return {"ok": True, "sleep": minutes}
 
 
@@ -1769,12 +1799,14 @@ def player():
     if state == "stop":
         return {"state": "stop", "album_id": None, "track_index": None, "track": None,
                 "elapsed": None, "duration": None, "album": None, "artist": None,
-                "cover_url": None, "volume": _OAAT_VOLUME, "format": None}
+                "cover_url": None, "volume": _OAAT_VOLUME, "format": None,
+                "sleep_minutes": _SLEEP_MINUTES}
     return {"state": state, "album_id": _OAAT_ALBUM_ID, "track_index": _OAAT_TRACK_INDEX,
             "track": _OAAT_TRACK_TITLE, "elapsed": resp.get("elapsed"),
             "duration": resp.get("duration") or _OAAT_DURATION,
             "album": _OAAT_ALBUM_NAME, "artist": _OAAT_ARTIST, "cover_url": _OAAT_COVER_URL,
-            "volume": _OAAT_VOLUME, "format": _OAAT_FORMAT}
+            "volume": _OAAT_VOLUME, "format": _OAAT_FORMAT,
+            "sleep_minutes": _SLEEP_MINUTES}
 
 
 class EndpointSelectReq(BaseModel):
@@ -1848,10 +1880,14 @@ def endpoints_select(req: EndpointSelectReq):
 def player_cmd(cmd: str):
     global _OAAT_ALBUM_ID, _OAAT_TRACK_INDEX, _OAAT_TRACK_NAME, _OAAT_TRACK_TITLE
     global _OAAT_DURATION, _OAAT_ALBUM_NAME, _OAAT_ARTIST, _OAAT_COVER_URL, _OAAT_FORMAT
-    global _QUEUE_POS
+    global _QUEUE, _QUEUE_POS
 
     if cmd == "stop":
         _ts_cmd({"cmd": "stop"})
+        # stop сбрасывает очередь — иначе UI показывает «призрачную» очередь,
+        # а next неожиданно продолжает с неё
+        _QUEUE = []
+        _QUEUE_POS = -1
         _OAAT_ALBUM_ID = None
         _OAAT_TRACK_INDEX = None
         _OAAT_TRACK_NAME = None
@@ -1911,6 +1947,11 @@ def queue_add(req: QueueReq):
         _QUEUE.insert(_QUEUE_POS + 1, {"aid": req.album_id, "idx": req.track_index})
     else:  # "end"
         _QUEUE.append({"aid": req.album_id, "idx": req.track_index})
+    # плеер простаивал — стартуем с первого трека, иначе добавка «осиротеет»
+    # (next не работает, пока ничего не играет); сбой старта добавление не отменяет
+    if _QUEUE_POS < 0 and _OAAT_ALBUM_ID is None:
+        with contextlib.suppress(HTTPException):
+            queue_jump(0)
     return {"ok": True, "queue_len": len(_QUEUE), "pos": _QUEUE_POS}
 
 

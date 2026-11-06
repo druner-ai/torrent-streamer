@@ -52,7 +52,9 @@ export default function App() {
 
   const loadPlayer = useCallback(async () => {
     try {
-      setPlayer(await api.player())
+      const p = await api.player()
+      setPlayer(p)
+      setSleepMinutes(p.sleep_minutes ?? null) // сервер — источник правды о таймере
     } catch {
       // background poll
     }

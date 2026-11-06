@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 
 import main
 import requests
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 client = TestClient(main.app)
@@ -310,6 +311,10 @@ def _reset_oaat_state():
     main._OAAT_FORMAT = None
     main._QUEUE = []
     main._QUEUE_POS = -1
+    if main._SLEEP_TIMER:
+        main._SLEEP_TIMER.cancel()
+        main._SLEEP_TIMER = None
+    main._SLEEP_MINUTES = None
 
 
 def _seed_album_with_tracks(main, db_path):
@@ -568,19 +573,66 @@ def test_player_volume_persists():
 
 def test_queue_add_and_get():
     _reset_oaat_state()
-    r = client.post("/api/queue", json={"album_id": 1, "track_index": 2, "mode": "end"})
-    assert r.status_code == 200
-    assert r.json()["queue_len"] == 1
+    with patch.object(main, "_start_track", return_value={"ok": True}):
+        r = client.post("/api/queue", json={"album_id": 1, "track_index": 2, "mode": "end"})
+        assert r.status_code == 200
+        assert r.json()["queue_len"] == 1
+        # плеер простаивал — добавление автостартовало первый трек
+        assert r.json()["pos"] == 0
 
-    r = client.post("/api/queue", json={"album_id": 1, "track_index": 5, "mode": "next"})
-    assert r.json()["queue_len"] == 2
+        r = client.post("/api/queue", json={"album_id": 1, "track_index": 5, "mode": "next"})
+        assert r.json()["queue_len"] == 2
 
-    r = client.get("/api/queue")
-    assert r.status_code == 200
-    body = r.json()
-    assert len(body["queue"]) == 2
-    assert body["queue"][0]["track_index"] == 5  # mode=next вставил в начало (pos=-1)
-    assert body["queue"][1]["track_index"] == 2
+        r = client.get("/api/queue")
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["queue"]) == 2
+        assert body["queue"][0]["track_index"] == 2  # автостарт сделал его текущим
+        assert body["queue"][0]["current"] is True
+        assert body["queue"][1]["track_index"] == 5  # mode=next вставил следом за текущим
+    _reset_oaat_state()
+
+
+def test_queue_add_idle_autostart_failure_keeps_track():
+    _reset_oaat_state()
+    with patch.object(main, "_start_track",
+                      side_effect=HTTPException(409, "трек ещё скачивается")):
+        r = client.post("/api/queue", json={"album_id": 1, "track_index": 0, "mode": "end"})
+        assert r.status_code == 200      # добавление не отклоняется
+        assert r.json()["queue_len"] == 1
+        assert r.json()["pos"] == -1     # старт не удался — трек остался в очереди
+    _reset_oaat_state()
+
+
+def test_stop_clears_queue():
+    _reset_oaat_state()
+    with patch.object(main, "_start_track", return_value={"ok": True}), \
+         patch.object(main, "_ts_cmd", return_value={"ok": True}):
+        client.post("/api/queue", json={"album_id": 1, "track_index": 0, "mode": "end"})
+        r = client.post("/api/player/stop")
+        assert r.status_code == 200
+        body = client.get("/api/queue").json()
+        assert body["queue"] == []
+        assert body["pos"] == -1
+    _reset_oaat_state()
+
+
+def test_player_volume_controller_error():
+    _reset_oaat_state()
+    with patch.object(main, "_ts_cmd", return_value={"ok": False, "error": "контроллер down"}):
+        r = client.post("/api/player/volume?level=50")
+        assert r.status_code == 500
+    _reset_oaat_state()
+
+
+def test_sleep_minutes_exposed_via_player():
+    _reset_oaat_state()
+    with patch.object(main, "_ts_cmd", return_value={"state": "stop"}):
+        r = client.post("/api/player/sleep?minutes=30")
+        assert r.json()["sleep"] == 30
+        assert client.get("/api/player").json()["sleep_minutes"] == 30
+        client.post("/api/player/sleep?minutes=0")
+        assert client.get("/api/player").json()["sleep_minutes"] is None
     _reset_oaat_state()
 
 
