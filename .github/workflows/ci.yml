@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t torrent-streamer-backend ./services/backend
+      - run: docker build -t torrent-streamer-backend -f services/backend/Dockerfile .
 
   test:
     runs-on: ubuntu-latest

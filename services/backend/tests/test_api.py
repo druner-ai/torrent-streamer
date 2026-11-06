@@ -11,10 +11,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from unittest.mock import Mock, patch
 
+import main
 import requests
 from fastapi.testclient import TestClient
-
-import main
 
 client = TestClient(main.app)
 
@@ -707,16 +706,19 @@ def test_settings_save_get(tmp_path):
 
 
 def test_catalog_tree_save_get(tmp_path):
-    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
-        with main.db() as c:
-            c.execute("INSERT INTO forums(forum_id,title,parent_id,category,enabled)"
-                      " VALUES(2267,'Джаз',0,'Джаз',0)")
-            c.execute("INSERT INTO forums(forum_id,title,parent_id,category,enabled)"
-                      " VALUES(2277,'Bop',2267,'Джаз',0)")
-            c.commit()
-        r = client.post("/api/catalog/tree", json={"enabled": [2277]})
-        assert r.status_code == 200
-        r = client.get("/api/catalog/tree")
+    # авто-краулинг новых разделов запускает фоновый поток — мокаем, чтобы тест
+    # не ходил живьём в FlareSolverr/MusicBrainz (утечка потока + warning)
+    with patch.object(main, "_run_catalog_refresh"):
+        with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+            with main.db() as c:
+                c.execute("INSERT INTO forums(forum_id,title,parent_id,category,enabled)"
+                          " VALUES(2267,'Джаз',0,'Джаз',0)")
+                c.execute("INSERT INTO forums(forum_id,title,parent_id,category,enabled)"
+                          " VALUES(2277,'Bop',2267,'Джаз',0)")
+                c.commit()
+            r = client.post("/api/catalog/tree", json={"enabled": [2277]})
+            assert r.status_code == 200
+            r = client.get("/api/catalog/tree")
         cats = r.json()["categories"]
         jazz = cats[0]["forums"][0]
         assert jazz["enabled"] is False          # группа-контейнер

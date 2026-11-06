@@ -1882,9 +1882,12 @@ def player_cmd(cmd: str):
             npos = _QUEUE_POS + step
             if not (0 <= npos < len(_QUEUE)):
                 return player_cmd("stop")  # конец очереди
-            _QUEUE_POS = npos
             entry = _QUEUE[npos]
-            return _start_track(entry["aid"], entry["idx"])
+            # позицию двигаем ТОЛЬКО после успешного старта — иначе при ошибке
+            # (трек ещё качается / ffmpeg упал) очередь разъезжается с плеером
+            result = _start_track(entry["aid"], entry["idx"])
+            _QUEUE_POS = npos
+            return result
         # фолбэк: соседний трек текущего альбома
         if _OAAT_ALBUM_ID is None:
             raise HTTPException(400, "сначала запусти альбом")
@@ -1916,9 +1919,11 @@ def queue_jump(pos: int):
     global _QUEUE_POS
     if not (0 <= pos < len(_QUEUE)):
         raise HTTPException(400, "нет такой позиции в очереди")
-    _QUEUE_POS = pos
     entry = _QUEUE[pos]
-    return _start_track(entry["aid"], entry["idx"])
+    # как в next/prev: позицию — только после успешного старта
+    result = _start_track(entry["aid"], entry["idx"])
+    _QUEUE_POS = pos
+    return result
 
 
 @app.get("/api/queue")
