@@ -54,32 +54,26 @@ def _parse_endpoints(raw: str) -> dict:
     return eps
 
 
-def _mdns_lookup(substr: str, timeout: float = 3.0) -> str | None:
-    """Поиск OAAT-endpoint по mDNS (_oaat._tcp), чьё имя содержит substr → 'ip:port'.
-
-    Endpoint (tune-bridge) сам регистрируется в mDNS: name=«MacBook DAC» port=9740
-    service_type=_oaat._tcp. Работает только в LAN (multicast) — вне LAN вернёт None,
-    и вызывающий уйдёт на прямой Tailscale-адрес.
-    """
+def _mdns_browse(timeout: float = 2.5) -> dict[str, str]:
+    """Обзор _oaat._tcp: все зарегистрированные endpoint'ы {display_name: 'ip:port'}."""
     try:
         from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
     except ImportError:
-        return None
+        return {}
     try:
         zc = Zeroconf()
     except Exception:  # noqa: BLE001 — Zeroconf кидает разные ошибки (OSError/RuntimeError) на разных системах
-        return None
-    found: list[str] = []
+        return {}
+    found: dict[str, str] = {}
 
     class _Listener(ServiceListener):
         def add_service(self, _zc, type_, name):
-            if substr.lower() not in name.lower():
-                return
             info = _zc.get_service_info(type_, name)
             if info and info.addresses:
                 raw = info.addresses[0]
                 ip = socket.inet_ntoa(raw) if len(raw) == 4 else socket.inet_ntop(socket.AF_INET6, raw)
-                found.append(f"{ip}:{info.port}")
+                # «MacBook DAC._oaat._tcp.local.» → «MacBook DAC»
+                found[name.split("._oaat._tcp")[0]] = f"{ip}:{info.port}"
 
         def remove_service(self, _zc, type_, name):
             return None
@@ -89,11 +83,53 @@ def _mdns_lookup(substr: str, timeout: float = 3.0) -> str | None:
 
     browser = ServiceBrowser(zc, "_oaat._tcp.local.", _Listener())
     deadline = time.time() + timeout
-    while time.time() < deadline and not found:
+    while time.time() < deadline:
         time.sleep(0.1)
+        if found:
+            time.sleep(0.4)  # дать остальным endpoint'ам успеть ответить
+            break
     browser.cancel()
     zc.close()
-    return found[0] if found else None
+    return found
+
+
+# Кэш mDNS-обнаружения: {name: 'ip:port'} + момент снимка. Пустой результат НЕ
+# перезаписывает непустой кэш сразу (моргания mDNS не должны ронять список);
+# чистим только когда никого не видно 3 TTL подряд.
+_MDNS_SERVICES: dict[str, str] = {}
+_MDNS_TS = 0.0
+_MDNS_TTL = 30.0
+_MDNS_LOCK = threading.Lock()
+
+
+def _mdns_services(force: bool = False) -> dict[str, str]:
+    """Все OAAT-endpoint'ы из mDNS (кэш TTL 30с) — включая не настроенные в .env."""
+    global _MDNS_TS, _MDNS_SERVICES
+    now = time.monotonic()
+    with _MDNS_LOCK:
+        if not force and now - _MDNS_TS < _MDNS_TTL:
+            return dict(_MDNS_SERVICES)
+    services = _mdns_browse()
+    with _MDNS_LOCK:
+        if services:
+            _MDNS_SERVICES = services
+        elif now - _MDNS_TS >= _MDNS_TTL * 3:
+            _MDNS_SERVICES = {}
+        _MDNS_TS = now
+    return dict(_MDNS_SERVICES)
+
+
+def _mdns_lookup(substr: str, timeout: float = 3.0, force: bool = False) -> str | None:
+    """Поиск OAAT-endpoint по mDNS (_oaat._tcp), чьё имя содержит substr → 'ip:port'.
+
+    Endpoint (tune-bridge) сам регистрируется в mDNS: name=«MacBook DAC» port=9740
+    service_type=_oaat._tcp. Работает только в LAN (multicast) — вне LAN вернёт None,
+    и вызывающий уйдёт на прямой Tailscale-адрес.
+    """
+    for name, addr in _mdns_services(force=force).items():
+        if substr.lower() in name.lower():
+            return addr
+    return None
 
 
 OAAT_ENDPOINTS = _parse_endpoints(os.getenv("OAAT_ENDPOINTS", ""))
@@ -111,26 +147,29 @@ _EP_ADDR_CACHE: dict[str, tuple[float, str]] = {}
 _EP_ADDR_TTL = 30.0
 
 
-def _resolve_ep(name: str) -> str | None:
-    """Пробегает кандидатов по порядку: первый живой mDNS; иначе первый прямой адрес."""
+def _resolve_ep(name: str, force: bool = False) -> str | None:
+    """Пробегает кандидатов по порядку: первый живой mDNS; иначе первый прямой адрес.
+    Для endpoint'ов без записи в .env — авто-обнаружение по точному mDNS-имени."""
     cands = OAAT_ENDPOINTS.get(name, [])
-    if not cands:
-        return None
     direct = None
     for cand in cands:
         if cand.startswith("mdns:"):
-            resolved = _mdns_lookup(cand[5:])
+            resolved = _mdns_lookup(cand[5:], force=force)
             if resolved:
                 return resolved
         else:
             if direct is None:
                 direct = cand
-    return direct
+    if direct:
+        return direct
+    if not cands:
+        return _mdns_services(force=force).get(name)
+    return None
 
 
-def _ep_addr(name: str) -> str | None:
+def _ep_addr(name: str | None) -> str | None:
     """Актуальный 'host:port' для endpoint (с TTL-кэшем)."""
-    if name not in OAAT_ENDPOINTS:
+    if name is None:
         return None
     now = time.monotonic()
     hit = _EP_ADDR_CACHE.get(name)
@@ -152,14 +191,20 @@ def _ep_headers() -> dict:
     return {"Authorization": f"Bearer {OAAT_CONTROL_TOKEN}"} if OAAT_CONTROL_TOKEN else {}
 
 
-def _active_ep_name() -> str:
+def _active_ep_name() -> str | None:
     try:
         name = Path(ACTIVE_EP_FILE).read_text().strip()
-        if name in OAAT_ENDPOINTS:
+        # валидно: настроенный в .env, либо обнаруженный по mDNS, либо недавно резолвленный
+        if name in OAAT_ENDPOINTS or name in _mdns_services() or name in _EP_ADDR_CACHE:
             return name
     except OSError:
         pass
-    return next(iter(OAAT_ENDPOINTS))
+    if OAAT_ENDPOINTS:
+        return next(iter(OAAT_ENDPOINTS))
+    discovered = _mdns_services()
+    if discovered:
+        return next(iter(discovered))
+    return None
 
 
 def _set_active_ep(name: str) -> None:
@@ -212,7 +257,10 @@ def _ep_watchdog() -> None:
         time.sleep(30)
         with contextlib.suppress(Exception):
             name = _active_ep_name()
-            addr = _resolve_ep(name)  # форс-резолв, минуя TTL-кэш
+            if name is None:
+                pending = None
+                continue
+            addr = _resolve_ep(name, force=True)  # форс-резолв, минуя TTL-кэш
             # контроллер умер (crash/kill) — перезапускаем на текущем адресе,
             # иначе плеер навсегда останется в «stop» до рестарта бэкенда
             if _TS_PROC is not None and _TS_PROC.poll() is not None:
@@ -1845,11 +1893,14 @@ def _ep_status(name: str) -> dict:
 
 @app.get("/api/endpoints")
 def endpoints():
-    """Все endpoint'ы + их аудио-устройства + активный."""
+    """Все endpoint'ы (настроенные в .env + авто-обнаруженные mDNS) + устройства + активный."""
     active = _active_ep_name()
+    discovered = _mdns_services()
+    names = list(OAAT_ENDPOINTS) + [n for n in discovered if n not in OAAT_ENDPOINTS]
     eps = []
-    for name in OAAT_ENDPOINTS:
-        ep = {"name": name, "control": _ep_addr(name), "active": name == active}
+    for name in names:
+        ep = {"name": name, "control": _ep_addr(name), "active": name == active,
+              "auto": name not in OAAT_ENDPOINTS}
         ep.update(_ep_status(name))
         eps.append(ep)
     return {"active": active, "endpoints": eps}
@@ -1858,17 +1909,21 @@ def endpoints():
 @app.post("/api/endpoints/select")
 def endpoints_select(req: EndpointSelectReq):
     """Переключить активный endpoint (перезапуск ts-controller) и/или устройство на нём."""
-    if req.endpoint and req.endpoint not in OAAT_ENDPOINTS:
+    if (req.endpoint and req.endpoint not in OAAT_ENDPOINTS
+            and req.endpoint not in _mdns_services()):
         raise HTTPException(400, f"неизвестный endpoint: {req.endpoint}")
     if req.endpoint:
         _set_active_ep(req.endpoint)
         _start_ts(_ep_addr(req.endpoint) or "")
     if req.device:
+        ep_name = _active_ep_name()
+        if ep_name is None:
+            raise HTTPException(400, "нет доступного endpoint'а")
         # Пауза перед сменой устройства: позиция трека сохраняется в ts-controller,
         # а не обнуляется (после переключения — resume с того же места).
         _ts_cmd({"cmd": "pause"})
         try:
-            r = requests.post(f"{_ep_web(_active_ep_name())}/api/device",
+            r = requests.post(f"{_ep_web(ep_name)}/api/device",
                               json={"device": req.device}, headers=_ep_headers(), timeout=5)
             r.raise_for_status()
         except requests.RequestException as e:

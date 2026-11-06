@@ -812,6 +812,67 @@ def test_ep_addr_caches_mdns_result():
         assert mdns.call_count == 1
 
 
+# --- P0.2: mDNS-автообнаружение новых endpoint'ов (без записи в .env) ---
+
+def test_mdns_services_caches_browse():
+    with patch.object(main, "_mdns_browse",
+                      return_value={"Pi DAC": "192.168.31.50:9740"}) as browse:
+        main._MDNS_SERVICES = {}
+        main._MDNS_TS = 0.0
+        a = main._mdns_services()
+        b = main._mdns_services()  # в пределах TTL — второй browse не зовётся
+        assert a == b == {"Pi DAC": "192.168.31.50:9740"}
+        assert browse.call_count == 1
+        # пустой browse НЕ стирает кэш сразу (защита от морганий mDNS):
+        # TTL истёк, но 3*TTL ещё нет
+        browse.return_value = {}
+        main._MDNS_TS = main.time.monotonic() - main._MDNS_TTL - 1
+        assert main._mdns_services() == {"Pi DAC": "192.168.31.50:9740"}
+    main._MDNS_SERVICES = {}
+    main._MDNS_TS = 0.0
+
+
+def test_resolve_ep_discovered_without_env():
+    with patch.object(main, "OAAT_ENDPOINTS", {}), \
+            patch.object(main, "_mdns_services",
+                         return_value={"Pi DAC": "192.168.31.50:9740"}):
+        assert main._resolve_ep("Pi DAC") == "192.168.31.50:9740"
+        assert main._resolve_ep("Неизвестный") is None
+
+
+def test_endpoints_includes_discovered():
+    main._EP_ADDR_CACHE.clear()
+    with patch.object(main, "OAAT_ENDPOINTS", {"NUC": ["127.0.0.1:9740"]}), \
+            patch.object(main, "_mdns_services",
+                         return_value={"Pi DAC": "192.168.31.50:9740"}), \
+            patch.object(main, "_ep_status", return_value={"available_devices": [],
+                                                           "current_device": None,
+                                                           "connected": False,
+                                                           "playing": False}):
+        body = client.get("/api/endpoints").json()
+        by_name = {e["name"]: e for e in body["endpoints"]}
+        assert "NUC" in by_name and "Pi DAC" in by_name
+        assert by_name["NUC"]["auto"] is False
+        assert by_name["Pi DAC"]["auto"] is True
+        assert by_name["Pi DAC"]["control"] == "192.168.31.50:9740"
+    main._EP_ADDR_CACHE.clear()
+
+
+def test_select_discovered_endpoint(tmp_path):
+    main._EP_ADDR_CACHE.clear()
+    with patch.object(main, "OAAT_ENDPOINTS", {"NUC": ["127.0.0.1:9740"]}), \
+            patch.object(main, "_mdns_services",
+                         return_value={"Pi DAC": "192.168.31.50:9740"}), \
+            patch.object(main, "ACTIVE_EP_FILE", str(tmp_path / "active_ep")), \
+            patch.object(main, "_start_ts") as start_ts:
+        r = client.post("/api/endpoints/select", json={"endpoint": "Pi DAC"})
+        assert r.status_code == 200
+        assert r.json()["active"] == "Pi DAC"
+        start_ts.assert_called_once_with("192.168.31.50:9740")
+        assert (tmp_path / "active_ep").read_text() == "Pi DAC"
+    main._EP_ADDR_CACHE.clear()
+
+
 # --- теги RuTracker: source / rip / quality ---
 
 def test_parse_torrent_title_source_rip_quality():

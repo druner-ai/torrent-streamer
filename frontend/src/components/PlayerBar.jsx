@@ -278,7 +278,14 @@ function EndpointSelect({ onNotify }) {
                       ep.active ? 'text-primary' : 'text-text-secondary'
                     }`}
                   >
-                    <span className="truncate">{ep.name}</span>
+                    <span className="flex min-w-0 items-center gap-1">
+                      <span className="truncate">{ep.name}</span>
+                      {ep.auto && (
+                        <span className="shrink-0 text-[9px] font-normal normal-case text-text-muted">
+                          auto
+                        </span>
+                      )}
+                    </span>
                     {ep.error ? (
                       <span className="text-[10px] font-normal normal-case text-danger">{ep.error}</span>
                     ) : (
