@@ -870,19 +870,23 @@ def test_ep_addr_caches_mdns_result():
 
 def test_mdns_services_caches_browse():
     with patch.object(main, "_mdns_browse",
-                      return_value={"Pi DAC": "192.168.31.50:9740"}) as browse:
+                      return_value=({"Pi DAC": "192.168.31.50:9740"},
+                                    {"Pi DAC": "txt-token"})) as browse:
         main._MDNS_SERVICES = {}
+        main._MDNS_TOKENS = {}
         main._MDNS_TS = 0.0
         a = main._mdns_services()
         b = main._mdns_services()  # в пределах TTL — второй browse не зовётся
         assert a == b == {"Pi DAC": "192.168.31.50:9740"}
         assert browse.call_count == 1
+        assert main._mdns_token("Pi DAC") == "txt-token"
         # пустой browse НЕ стирает кэш сразу (защита от морганий mDNS):
         # TTL истёк, но 3*TTL ещё нет
-        browse.return_value = {}
+        browse.return_value = ({}, {})
         main._MDNS_TS = main.time.monotonic() - main._MDNS_TTL - 1
         assert main._mdns_services() == {"Pi DAC": "192.168.31.50:9740"}
     main._MDNS_SERVICES = {}
+    main._MDNS_TOKENS = {}
     main._MDNS_TS = 0.0
 
 
@@ -925,6 +929,56 @@ def test_select_discovered_endpoint(tmp_path):
         start_ts.assert_called_once_with("192.168.31.50:9740")
         assert (tmp_path / "active_ep").read_text() == "Pi DAC"
     main._EP_ADDR_CACHE.clear()
+
+
+def test_mdns_token_falls_back_to_setting(tmp_path):
+    with patch.object(main, "_mdns_services",
+                      return_value={"Pi DAC": "192.168.31.50:9740"}), \
+            patch.object(main, "_MDNS_TOKENS", {}), \
+            patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        assert main._mdns_token("Pi DAC") is None
+        main._set_setting("ep_token:Pi DAC", "db-token")
+        assert main._mdns_token("Pi DAC") == "db-token"
+
+
+def test_ep_headers_prefers_per_endpoint_token():
+    with patch.object(main, "_mdns_token", return_value="tok-mdns"), \
+            patch.object(main, "OAAT_CONTROL_TOKEN", "tok-env"):
+        assert main._ep_headers("Pi DAC")["Authorization"].endswith("tok-mdns")
+    with patch.object(main, "_mdns_token", return_value=None), \
+            patch.object(main, "OAAT_CONTROL_TOKEN", "tok-env"):
+        assert main._ep_headers("Pi DAC")["Authorization"].endswith("tok-env")
+    with patch.object(main, "_mdns_token", return_value=None), \
+            patch.object(main, "OAAT_CONTROL_TOKEN", ""):
+        assert main._ep_headers("Pi DAC") == {}
+
+
+def test_regenerate_token_proxy():
+    resp = Mock(status_code=200)
+    with patch.object(main, "_mdns_services",
+                      return_value={"Pi DAC": "192.168.31.50:9740"}), \
+            patch.object(main, "OAAT_ENDPOINTS", {}), \
+            patch.object(main, "_ep_addr", return_value="192.168.31.50:9740"), \
+            patch.object(main, "_ep_web", return_value="http://192.168.31.50:9741"), \
+            patch.object(main, "_ep_headers", return_value={}), \
+            patch.object(main.threading, "Thread"), \
+            patch.object(main.requests, "post", return_value=resp) as rp:
+        r = client.post("/api/endpoints/regenerate_token", json={"endpoint": "Pi DAC"})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        assert rp.call_args[0][0] == "http://192.168.31.50:9741/api/token/regenerate"
+
+
+def test_regenerate_token_conflict_when_config_token():
+    resp = Mock(status_code=409)
+    with patch.object(main, "_mdns_services",
+                      return_value={"Pi DAC": "192.168.31.50:9740"}), \
+            patch.object(main, "OAAT_ENDPOINTS", {}), \
+            patch.object(main, "_ep_addr", return_value="192.168.31.50:9740"), \
+            patch.object(main, "_ep_web", return_value="http://192.168.31.50:9741"), \
+            patch.object(main, "_ep_headers", return_value={}), \
+            patch.object(main.requests, "post", return_value=resp):
+        r = client.post("/api/endpoints/regenerate_token", json={"endpoint": "Pi DAC"})
+        assert r.status_code == 409
 
 
 # --- теги RuTracker: source / rip / quality ---

@@ -54,17 +54,18 @@ def _parse_endpoints(raw: str) -> dict:
     return eps
 
 
-def _mdns_browse(timeout: float = 2.5) -> dict[str, str]:
-    """Обзор _oaat._tcp: все зарегистрированные endpoint'ы {display_name: 'ip:port'}."""
+def _mdns_browse(timeout: float = 2.5) -> tuple[dict[str, str], dict[str, str]]:
+    """Обзор _oaat._tcp: ({имя: 'ip:port'}, {имя: token из mDNS TXT})."""
     try:
         from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
     except ImportError:
-        return {}
+        return {}, {}
     try:
         zc = Zeroconf()
     except Exception:  # noqa: BLE001 — Zeroconf кидает разные ошибки (OSError/RuntimeError) на разных системах
-        return {}
+        return {}, {}
     found: dict[str, str] = {}
+    tokens: dict[str, str] = {}
 
     class _Listener(ServiceListener):
         def add_service(self, _zc, type_, name):
@@ -73,7 +74,11 @@ def _mdns_browse(timeout: float = 2.5) -> dict[str, str]:
                 raw = info.addresses[0]
                 ip = socket.inet_ntoa(raw) if len(raw) == 4 else socket.inet_ntop(socket.AF_INET6, raw)
                 # «MacBook DAC._oaat._tcp.local.» → «MacBook DAC»
-                found[name.split("._oaat._tcp")[0]] = f"{ip}:{info.port}"
+                disp = name.split("._oaat._tcp")[0]
+                found[disp] = f"{ip}:{info.port}"
+                tok = (info.properties or {}).get(b"token")
+                if tok:
+                    tokens[disp] = tok.decode(errors="replace")
 
         def remove_service(self, _zc, type_, name):
             return None
@@ -90,13 +95,14 @@ def _mdns_browse(timeout: float = 2.5) -> dict[str, str]:
             break
     browser.cancel()
     zc.close()
-    return found
+    return found, tokens
 
 
 # Кэш mDNS-обнаружения: {name: 'ip:port'} + момент снимка. Пустой результат НЕ
 # перезаписывает непустой кэш сразу (моргания mDNS не должны ронять список);
 # чистим только когда никого не видно 3 TTL подряд.
 _MDNS_SERVICES: dict[str, str] = {}
+_MDNS_TOKENS: dict[str, str] = {}
 _MDNS_TS = 0.0
 _MDNS_TTL = 30.0
 _MDNS_LOCK = threading.Lock()
@@ -104,19 +110,30 @@ _MDNS_LOCK = threading.Lock()
 
 def _mdns_services(force: bool = False) -> dict[str, str]:
     """Все OAAT-endpoint'ы из mDNS (кэш TTL 30с) — включая не настроенные в .env."""
-    global _MDNS_TS, _MDNS_SERVICES
+    global _MDNS_TS, _MDNS_SERVICES, _MDNS_TOKENS
     now = time.monotonic()
     with _MDNS_LOCK:
         if not force and now - _MDNS_TS < _MDNS_TTL:
             return dict(_MDNS_SERVICES)
-    services = _mdns_browse()
+    services, tokens = _mdns_browse()
     with _MDNS_LOCK:
         if services:
             _MDNS_SERVICES = services
+            _MDNS_TOKENS = tokens
         elif now - _MDNS_TS >= _MDNS_TTL * 3:
             _MDNS_SERVICES = {}
+            _MDNS_TOKENS = {}
         _MDNS_TS = now
     return dict(_MDNS_SERVICES)
+
+
+def _mdns_token(name: str) -> str | None:
+    """control_token конкретного endpoint'а: mDNS TXT (авто-токен) > настройка в БД."""
+    if name in _mdns_services():
+        tok = _MDNS_TOKENS.get(name)
+        if tok:
+            return tok
+    return _get_setting(f"ep_token:{name}") or None
 
 
 def _mdns_lookup(substr: str, timeout: float = 3.0, force: bool = False) -> str | None:
@@ -186,9 +203,15 @@ def _ep_web(name: str) -> str:
     return "http://" + (_ep_addr(name) or "").rsplit(":", 1)[0] + ":9741"
 
 
-def _ep_headers() -> dict:
-    """Bearer-токен для управляющих POST на OAAT web UI (если задан control_token)."""
-    return {"Authorization": f"Bearer {OAAT_CONTROL_TOKEN}"} if OAAT_CONTROL_TOKEN else {}
+def _ep_headers(name: str | None = None) -> dict:
+    """Bearer для управляющих POST на OAAT web UI.
+
+    Приоритет токена: mDNS TXT (авто-сгенерированный endpoint'ом) →
+    настройка `ep_token:<name>` в БД → глобальный OAAT_CONTROL_TOKEN из env.
+    """
+    ep = name or _active_ep_name()
+    token = (_mdns_token(ep) if ep else None) or OAAT_CONTROL_TOKEN
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _active_ep_name() -> str | None:
@@ -1974,11 +1997,49 @@ def endpoints_select(req: EndpointSelectReq):
         _ts_cmd({"cmd": "pause"})
         try:
             r = requests.post(f"{_ep_web(ep_name)}/api/device",
-                              json={"device": req.device}, headers=_ep_headers(), timeout=5)
+                              json={"device": req.device}, headers=_ep_headers(ep_name), timeout=5)
             r.raise_for_status()
         except requests.RequestException as e:
             return JSONResponse({"detail": f"endpoint недоступен: {e}"}, status_code=502)
     return {"active": _active_ep_name(), "ok": True}
+
+
+@app.post("/api/endpoints/regenerate_token")
+def endpoints_regenerate_token(req: EndpointSelectReq):
+    """Регенерация control_token на endpoint'е.
+
+    Endpoint удаляет state-файл токена и выходит — супервизор (systemd/
+    LaunchAgent) перезапускает его, генерируется новый токен и публикуется
+    в mDNS TXT; backend подхватывает его форс-обзором через несколько секунд.
+    Доступно только для авто-сгенерированных токенов (иначе endpoint отдаёт 409).
+    """
+    if (req.endpoint and req.endpoint not in OAAT_ENDPOINTS
+            and req.endpoint not in _mdns_services()):
+        raise HTTPException(400, f"неизвестный endpoint: {req.endpoint}")
+    name = req.endpoint or _active_ep_name()
+    if name is None:
+        raise HTTPException(400, "нет доступного endpoint'а")
+    if not _ep_addr(name):
+        raise HTTPException(502, "endpoint недоступен")
+    try:
+        r = requests.post(f"{_ep_web(name)}/api/token/regenerate",
+                          json={}, headers=_ep_headers(name), timeout=5)
+        if r.status_code == 409:
+            raise HTTPException(
+                409, "токен endpoint'а задан конфигом — регенерация через API недоступна")
+        r.raise_for_status()
+    except requests.RequestException as e:
+        raise HTTPException(502, f"endpoint недоступен: {e}") from e
+
+    def _refresh():
+        # endpoint перезапустится и перерегистрируется в mDNS с новым токеном
+        time.sleep(8)
+        with contextlib.suppress(Exception):
+            _mdns_services(force=True)
+            _EP_ADDR_CACHE.pop(name, None)
+
+    threading.Thread(target=_refresh, daemon=True).start()
+    return {"ok": True, "restart": True}
 
 
 @app.post("/api/player/{cmd}")

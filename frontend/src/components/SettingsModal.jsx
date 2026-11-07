@@ -15,6 +15,8 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [qbtPassSet, setQbtPassSet] = useState(false)
   const [adminAuth, setAdminAuth] = useState('')
   const [adminAuthSet, setAdminAuthSet] = useState(false)
+  const [endpointList, setEndpointList] = useState([])
+  const [regenBusy, setRegenBusy] = useState(null)
 
   useEffect(() => {
     if (!open) return
@@ -33,10 +35,26 @@ export default function SettingsModal({ open, onClose, notify }) {
       })
       .catch((e) => notify(e.message, 'error'))
       .finally(() => alive && setLoading(false))
+    api
+      .endpoints()
+      .then((d) => alive && setEndpointList(d.endpoints || []))
+      .catch(() => {})
     return () => {
       alive = false
     }
   }, [open, notify])
+
+  async function regenToken(name) {
+    setRegenBusy(name)
+    try {
+      await api.regenerateToken(name)
+      notify('Токен регенерирован; endpoint перезапускается', 'success')
+    } catch (e) {
+      notify(e.message, 'error')
+    } finally {
+      setRegenBusy(null)
+    }
+  }
 
   async function save() {
     setSaving(true)
@@ -185,6 +203,34 @@ export default function SettingsModal({ open, onClose, notify }) {
                 После сохранения браузер запросит новые креды.
               </p>
             </div>
+
+            {endpointList.length > 0 && (
+              <div>
+                <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-text-muted">
+                  Эндпоинты
+                </h3>
+                {endpointList.map((ep) => (
+                  <div key={ep.name} className="mb-2 flex items-center gap-2">
+                    <span className="flex-1 truncate text-[13px] text-text-secondary">
+                      {ep.name}
+                      {ep.auto ? ' (mDNS)' : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => regenToken(ep.name)}
+                      disabled={regenBusy != null}
+                      className="flex shrink-0 items-center gap-1.5 rounded-sm bg-surface-1 px-2.5 py-1.5 text-[11.5px] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-60"
+                    >
+                      {regenBusy === ep.name && <Loader2 size={12} className="animate-spin" />}
+                      Регенерировать токен
+                    </button>
+                  </div>
+                ))}
+                <p className="mt-1 text-[11px] text-text-muted">
+                  Только для авто-сгенерированных токенов; endpoint перезапустится.
+                </p>
+              </div>
+            )}
           </div>
         )}
 

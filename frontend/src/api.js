@@ -72,6 +72,7 @@ export const api = {
 
   endpoints: () => request('/api/endpoints'),
   selectEndpoint: (endpoint, device) => post('/api/endpoints/select', { endpoint, device }),
+  regenerateToken: (endpoint) => post('/api/endpoints/regenerate_token', { endpoint }),
 
   player: () => request('/api/player'),
   playerCmd: (cmd) => post(`/api/player/${cmd}`),
