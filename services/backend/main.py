@@ -832,7 +832,7 @@ def _flaresolverr_get(url: str) -> str:
             last = e
             if attempt == 0:
                 time.sleep(3)
-    raise last
+    raise last or RuntimeError("FlareSolverr недоступен")
 
 
 def _guess_lossless(title: str) -> int | None:
