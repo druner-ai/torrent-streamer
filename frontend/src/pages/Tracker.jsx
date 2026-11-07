@@ -1,4 +1,4 @@
-import { ChevronRight, Download, LayoutGrid, Loader2, RefreshCw, Rss, Search, Settings2, Sparkles, X } from 'lucide-react'
+import { ChevronRight, Download, LayoutGrid, Loader2, Mic, RefreshCw, Rss, Search, Settings2, Sparkles, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api.js'
 import { formatSize, seedersTone } from '../utils.js'
@@ -60,6 +60,14 @@ export default function Tracker({ notify, onAlbumAdded }) {
   const [refreshDepth, setRefreshDepth] = useState(3)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshInfo, setRefreshInfo] = useState(null)
+  const [viewMode, setViewMode] = useState('grid') // grid = витрина | artist = по исполнителю
+  const [selectedArtist, setSelectedArtist] = useState(null)
+  const [artistQuery, setArtistQuery] = useState('')
+  const [artistQ, setArtistQ] = useState('')
+  const [artists, setArtists] = useState([])
+  const [artistsTotal, setArtistsTotal] = useState(0)
+  const [artistsLoading, setArtistsLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
 
   const loadTree = async () => {
     try {
@@ -79,6 +87,11 @@ export default function Tracker({ notify, onAlbumAdded }) {
     const id = setTimeout(() => setQ(qInput.trim()), 300)
     return () => clearTimeout(id)
   }, [qInput])
+
+  useEffect(() => {
+    const id = setTimeout(() => setArtistQ(artistQuery.trim()), 300)
+    return () => clearTimeout(id)
+  }, [artistQuery])
 
   const leafForums = (category) => {
     const ids = []
@@ -116,23 +129,27 @@ export default function Tracker({ notify, onAlbumAdded }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subId, catIdx, groupIdx, visibleTree, sortMode])
 
+  const groupsParams = () => ({
+    forum_id: forumIds.length ? forumIds : undefined,
+    min_seeders: minSeeders || undefined,
+    lossless: losslessOnly ? true : undefined,
+    q: q || undefined,
+    format: format || undefined,
+    source: source || undefined,
+    rip: rip || undefined,
+    quality: quality || undefined,
+    genre: genre || undefined,
+    sort: sortMode !== 'seeders' ? sortMode : undefined,
+    artist: selectedArtist || undefined,
+    limit: 300,
+  })
+
   useEffect(() => {
     let alive = true
     setLoading(true)
     setError(null)
     api
-      .catalogGroups({
-        forum_id: forumIds.length ? forumIds : undefined,
-        min_seeders: minSeeders || undefined,
-        lossless: losslessOnly ? true : undefined,
-        q: q || undefined,
-        format: format || undefined,
-        source: source || undefined,
-        rip: rip || undefined,
-        quality: quality || undefined,
-        genre: genre || undefined,
-        sort: sortMode !== 'seeders' ? sortMode : undefined,
-      })
+      .catalogGroups(groupsParams())
       .then((data) => {
         if (!alive) return
         setGroups(data.groups || [])
@@ -148,7 +165,54 @@ export default function Tracker({ notify, onAlbumAdded }) {
     return () => {
       alive = false
     }
-  }, [forumIds, minSeeders, losslessOnly, q, sortMode, reloadTick, format, source, rip, quality, genre])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forumIds, minSeeders, losslessOnly, q, sortMode, reloadTick, format, source, rip, quality, genre, selectedArtist])
+
+  async function loadMoreGroups() {
+    setLoadingMore(true)
+    try {
+      const data = await api.catalogGroups({ ...groupsParams(), offset: groups.length })
+      setGroups((gs) => [...gs, ...(data.groups || [])])
+    } catch (e) {
+      notify(e.message, 'error')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  // режим «По исполнителю»: агрегат исполнителей каталога
+  useEffect(() => {
+    if (viewMode !== 'artist') return undefined
+    let alive = true
+    setArtistsLoading(true)
+    api
+      .catalogArtists({ q: artistQ || undefined, limit: 100 })
+      .then((d) => {
+        if (!alive) return
+        setArtists(d.artists || [])
+        setArtistsTotal(d.total || 0)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setArtistsLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [viewMode, artistQ, reloadTick])
+
+  async function loadMoreArtists() {
+    setArtistsLoading(true)
+    try {
+      const d = await api.catalogArtists({ q: artistQ || undefined, limit: 100, offset: artists.length })
+      setArtists((prev) => [...prev, ...(d.artists || [])])
+      setArtistsTotal(d.total || 0)
+    } catch (e) {
+      notify(e.message, 'error')
+    } finally {
+      setArtistsLoading(false)
+    }
+  }
 
   const activeCategory = useMemo(
     () => (catIdx != null ? visibleTree[catIdx] : null),
@@ -433,6 +497,23 @@ export default function Tracker({ notify, onAlbumAdded }) {
           Только Lossless
         </label>
 
+        <div className="flex h-9 shrink-0 items-center gap-0.5 rounded-sm bg-surface-inset p-0.5">
+          <button
+            type="button"
+            onClick={() => setViewMode('grid')}
+            className={`flex h-8 items-center gap-1.5 rounded-sm px-2.5 text-[12.5px] transition-colors ${viewMode === 'grid' ? 'bg-surface-2 font-medium text-text-primary' : 'text-text-secondary'}`}
+          >
+            <LayoutGrid size={13} /> Витрина
+          </button>
+          <button
+            type="button"
+            onClick={() => { setViewMode('artist'); setSelectedArtist(null) }}
+            className={`flex h-8 items-center gap-1.5 rounded-sm px-2.5 text-[12.5px] transition-colors ${viewMode === 'artist' ? 'bg-surface-2 font-medium text-text-primary' : 'text-text-secondary'}`}
+          >
+            <Mic size={13} /> Исполнители
+          </button>
+        </div>
+
         <select
           value={sortMode}
           onChange={(e) => setSortMode(e.target.value)}
@@ -479,6 +560,70 @@ export default function Tracker({ notify, onAlbumAdded }) {
         <div className="mb-4 rounded-sm bg-danger/10 p-3 text-[14px] text-danger">{error}</div>
       )}
 
+      {viewMode === 'artist' && !selectedArtist ? (
+        <div>
+          <input
+            value={artistQuery}
+            onChange={(e) => setArtistQuery(e.target.value)}
+            placeholder="Поиск исполнителя…"
+            className="mb-3 h-9 w-full max-w-sm rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
+          />
+          {artistsLoading && artists.length === 0 ? (
+            <div className="space-y-2">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="h-11 animate-pulse rounded-sm bg-surface-1" />
+              ))}
+            </div>
+          ) : artists.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 py-12">
+              <Mic size={36} className="text-text-muted" />
+              <p className="text-[14px] text-text-secondary">Исполнители не найдены</p>
+            </div>
+          ) : (
+            <ul className="divide-y divide-border-subtle rounded-md bg-surface-1">
+              {artists.map((a) => (
+                <li key={a.artist}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedArtist(a.artist)}
+                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2"
+                  >
+                    <span className="truncate text-[14px] text-text-primary">{a.artist}</span>
+                    <span className="shrink-0 font-mono text-[11px] text-text-muted">
+                      {a.albums} альб. · {a.torrents} разд.
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {artists.length < artistsTotal && (
+            <button
+              type="button"
+              onClick={loadMoreArtists}
+              disabled={artistsLoading}
+              className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-sm bg-surface-1 text-[13px] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
+            >
+              {artistsLoading && <Loader2 size={14} className="animate-spin" />}
+              Показать ещё ({artistsTotal - artists.length})
+            </button>
+          )}
+        </div>
+      ) : (
+        <>
+          {selectedArtist && (
+            <div className="mb-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedArtist(null)}
+                className="flex h-8 shrink-0 items-center gap-1.5 rounded-sm bg-surface-1 px-2.5 text-[12.5px] text-text-secondary transition-colors hover:bg-surface-2"
+              >
+                <ChevronRight size={14} className="rotate-180" />
+                Все исполнители
+              </button>
+              <span className="truncate text-[15px] font-semibold text-text-primary">{selectedArtist}</span>
+            </div>
+          )}
       {loading ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
           {Array.from({ length: 10 }).map((_, i) => (
@@ -554,6 +699,19 @@ export default function Tracker({ notify, onAlbumAdded }) {
           })}
         </div>
       )}
+          {!loading && groups.length > 0 && groups.length < count && (
+            <button
+              type="button"
+              onClick={loadMoreGroups}
+              disabled={loadingMore}
+              className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-sm bg-surface-1 text-[13px] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
+            >
+              {loadingMore && <Loader2 size={14} className="animate-spin" />}
+              Показать ещё ({count - groups.length})
+            </button>
+          )}
+        </>
+      )}
 
       {/* модалка выбора издания */}
       {selected && (
@@ -568,7 +726,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
             <div className="mb-4 flex items-start gap-4">
               <div className="h-20 w-20 shrink-0 overflow-hidden rounded-md bg-surface-inset">
                 {selected.cover_url ? (
-                  <img src={selected.cover_url} alt="" className="h-full w-full object-cover" />
+                  <img src={api.coverProxy(selected.cover_url)} alt="" className="h-full w-full object-cover" />
                 ) : (
                   <div className="flex h-full w-full items-center justify-center font-display text-2xl font-bold text-text-disabled">
                     {(selected.artist || selected.album || '?').slice(0, 1).toUpperCase()}
@@ -593,8 +751,19 @@ export default function Tracker({ notify, onAlbumAdded }) {
               </button>
             </div>
 
-            <ul className="divide-y divide-border-subtle">
-              {selected.editions.map((e) => {
+            {(() => {
+              const SECTIONS = [
+                ['hires', 'Hi-Res'],
+                ['dsd', 'DSD / SACD'],
+                ['cd', 'CD-качество'],
+                ['lossy', 'MP3 / Lossy'],
+                [null, 'Прочее'],
+              ]
+              const byQ = SECTIONS
+                .map(([qv, label]) => [label, selected.editions.filter((e) => (e.quality || null) === qv)])
+                .filter(([, eds]) => eds.length > 0)
+              const showHeaders = byQ.length > 1
+              const renderEdition = (e) => {
                 const tone = seedersTone(e.seeders || 0)
                 return (
                   <li key={e.t} className="flex items-center gap-3 py-3">
@@ -629,8 +798,18 @@ export default function Tracker({ notify, onAlbumAdded }) {
                     </button>
                   </li>
                 )
-              })}
-            </ul>
+              }
+              return byQ.map(([label, eds]) => (
+                <div key={label} className="mb-1">
+                  {showHeaders && (
+                    <p className="px-1 pb-1 pt-3 font-mono text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                      {label} · {eds.length}
+                    </p>
+                  )}
+                  <ul className="divide-y divide-border-subtle">{eds.map(renderEdition)}</ul>
+                </div>
+              ))
+            })()}
           </div>
         </div>
       )}

@@ -443,6 +443,11 @@ def _schema(c):
             c.execute(f"ALTER TABLE catalog ADD COLUMN {col}")
     with contextlib.suppress(sqlite3.OperationalError):
         c.execute("ALTER TABLE catalog ADD COLUMN last_post INTEGER")
+    # индексы: каталог растёт до 100k+ строк, фильтры/сортировки без них деградируют
+    for idx, col in (("idx_cat_forum", "forum_id"), ("idx_cat_rk", "release_key"),
+                     ("idx_cat_lp", "last_post"), ("idx_cat_seed", "seeders"),
+                     ("idx_cat_artist", "artist")):
+        c.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON catalog({col})")
     c.execute("""CREATE TABLE IF NOT EXISTS settings(
         key TEXT PRIMARY KEY, value TEXT)""")
     c.execute("""CREATE TABLE IF NOT EXISTS forums(
@@ -647,6 +652,11 @@ def _parse_torrent_title(title: str) -> dict:
     a = re.sub(r"\s*,\s*\d+\s*CD.*$", "", a, flags=re.IGNORECASE)
     a = re.sub(r"\s*\(\d+\s*CD[^)]*\)\s*$", "", a, flags=re.IGNORECASE)
     a = re.sub(r"\s*[-–—]\s*(?:19|20)\d{2}\s*$", "", a)
+    # форматный хвост (« - APE», « - .ape+.cue/ lossless») — не часть названия:
+    # он ломал группировку изданий одного альбома и поиск обложек
+    a = re.sub(r"\s*[-–—/]\s*\.?\s*(?:ape|flac|mp3|alac|wavpack|wv|dsd|dsf|ogg|aac|opus)"
+               r"(?:\s*\+\s*\.?\s*cue)?/?\s*(?:tracks|image)?/?\s*(?:lossless|lossy)?\s*$",
+               "", a, flags=re.IGNORECASE)
     album = re.sub(r"\s+", " ", a).strip(" -–—") or None
     lossless = 0 if fmt and fmt.upper() in ("MP3", "AAC", "OGG", "OPUS") else (1 if fmt else None)
     quality = _quality(fmt, bitrate)
@@ -1007,7 +1017,8 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
                    min_seeders: int = 0, lossless: bool | None = None, q: str | None = None,
                    genre: str | None = None, format: str | None = None,
                    source: str | None = None, rip: str | None = None,
-                   quality: str | None = None, sort: str = "seeders"):
+                   quality: str | None = None, sort: str = "seeders",
+                   artist: str | None = None, limit: int = 0, offset: int = 0):
     """раздачи, сгруппированные по релизу (release_key) → выбор качества (издания)."""
     sql = "SELECT * FROM catalog WHERE 1=1"
     params: list = []
@@ -1032,6 +1043,9 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
     if quality:
         sql += " AND quality=?"
         params.append(quality)
+    if artist:
+        sql += " AND artist=?"
+        params.append(artist)
     if q:
         sql += " AND (title LIKE ? OR artist LIKE ? OR album LIKE ?)"
         like = f"%{q}%"
@@ -1081,6 +1095,9 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
         out = sorted(groups.values(), key=lambda g: (g["artist"] or g["album"] or "").lower())
     else:
         out = sorted(groups.values(), key=lambda g: -max(e["seeders"] for e in g["editions"]))
+    total = len(out)
+    if limit > 0 or offset:
+        out = out[offset:offset + limit] if limit > 0 else out[offset:]
     with db() as c:
         lib_rows = c.execute("SELECT release_key, catalog_t FROM albums").fetchall()
     lib_exact = {r["release_key"] for r in lib_rows if r["release_key"]}
@@ -1103,7 +1120,31 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
         "sources": [{"name": k, "count": v} for k, v in
                     sorted(sources_ct.items(), key=lambda x: -x[1])],
     }
-    return {"groups": out, "count": len(out), "facets": facets}
+    return {"groups": out, "count": total, "total": total, "offset": offset, "facets": facets}
+
+
+@app.get("/api/catalog/artists")
+def catalog_artists(q: str | None = None, letter: str | None = None,
+                    limit: int = 100, offset: int = 0):
+    """агрегат исполнителей каталога для режима «По исполнителю»."""
+    sql = ("SELECT artist, COUNT(DISTINCT release_key) AS albums, COUNT(*) AS torrents, "
+           "MAX(seeders) AS seeders, COUNT(*) OVER() AS total "
+           "FROM catalog WHERE artist IS NOT NULL AND artist != ''")
+    params: list = []
+    if q:
+        sql += " AND artist LIKE ?"
+        params.append(f"%{q}%")
+    if letter:
+        sql += " AND lower(substr(artist,1,1))=?"
+        params.append(letter.lower())
+    sql += " GROUP BY artist ORDER BY artist COLLATE NOCASE LIMIT ? OFFSET ?"
+    params += [limit, offset]
+    with db() as c:
+        rows = [dict(r) for r in c.execute(sql, params).fetchall()]
+    total = rows[0]["total"] if rows else 0
+    for r in rows:
+        r.pop("total", None)
+    return {"artists": rows, "total": total, "offset": offset}
 
 
 # ---------- фоновое обновление каталога ----------
@@ -1125,7 +1166,7 @@ def _save_crawled(crawled: list[dict]) -> int:
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(t) DO UPDATE SET seeders=excluded.seeders,
                        leechers=excluded.leechers, lossless=excluded.lossless,
-                       year=excluded.year, crawled_at=excluded.crawled_at,
+                       year=excluded.year,
                        artist=excluded.artist, album=excluded.album,
                        format=excluded.format, bitrate=excluded.bitrate,
                        release_key=excluded.release_key, genre=excluded.genre,

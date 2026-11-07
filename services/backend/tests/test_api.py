@@ -1154,3 +1154,70 @@ def test_flaresolverr_get_uses_session():
     payload = post.call_args.kwargs["json"]
     assert payload["session"] == "soundvault"
     assert payload["session_ttl"] == 1800
+
+
+def test_parse_title_album_format_tail():
+    # форматный хвост не должен попадать в album (ломал группировку изданий)
+    p = main._parse_torrent_title("Diana Krall - The Girl in the Other Room - APE")
+    assert p["album"] == "The Girl in the Other Room"
+    p = main._parse_torrent_title(
+        "Jacques Loussier Trio - Mozart Piano Concertos 20/23 - .ape+.cue/ lossless")
+    assert p["album"] == "Mozart Piano Concertos 20/23"
+    # год в конце — по-прежнему срезается
+    p = main._parse_torrent_title("Artist - Album (2020)")
+    assert p["album"] == "Album"
+
+
+def test_groups_pagination_and_artist_filter(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        with main.db() as c:
+            for i in range(5):
+                c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,
+                              crawled_at,lossless,artist,album,release_key)
+                             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                          (i, 2277, f"AA - Album{i} (2020)", "1GB", 10 - i, 0, 0, 1,
+                           "AA", f"Album{i}", f"aa|album{i}"))
+            c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,
+                          crawled_at,lossless,artist,album,release_key)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                      (99, 2277, "BB - Other (2020)", "1GB", 5, 0, 0, 1, "BB", "Other", "bb|other"))
+            c.commit()
+        r = client.get("/api/catalog/groups?forum_id=2277&limit=2&offset=0")
+        d = r.json()
+        assert r.status_code == 200
+        assert len(d["groups"]) == 2
+        assert d["total"] == 6 and d["count"] == 6
+        r2 = client.get("/api/catalog/groups?forum_id=2277&limit=2&offset=4")
+        assert len(r2.json()["groups"]) == 2
+        # фильтр по исполнителю
+        r3 = client.get("/api/catalog/groups?artist=BB")
+        d3 = r3.json()
+        assert d3["total"] == 1
+        assert d3["groups"][0]["artist"] == "BB"
+        # limit=0 (дефолт) — отдаёт всё, как раньше
+        assert len(client.get("/api/catalog/groups?forum_id=2277").json()["groups"]) == 6
+
+
+def test_catalog_artists_endpoint(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        with main.db() as c:
+            rows = [("Miles Davis", "Kind of Blue", "miles davis|kind of blue", 20),
+                    ("Miles Davis", "Birth of the Cool", "miles davis|birth of the cool", 15),
+                    ("Miles Davis", "Kind of Blue", "miles davis|kind of blue", 10),
+                    ("John Coltrane", "A Love Supreme", "john coltrane|a love supreme", 30)]
+            for i, (ar, al, rk, sd) in enumerate(rows):
+                c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,
+                              crawled_at,lossless,artist,album,release_key)
+                             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                          (i, 2277, f"{ar} - {al}", "1GB", sd, 0, 0, 1, ar, al, rk))
+            c.commit()
+        r = client.get("/api/catalog/artists")
+        d = r.json()
+        assert r.status_code == 200
+        assert d["total"] == 2
+        miles = next(a for a in d["artists"] if a["artist"] == "Miles Davis")
+        assert miles["albums"] == 2 and miles["torrents"] == 3 and miles["seeders"] == 20
+        r2 = client.get("/api/catalog/artists?q=coltrane")
+        assert r2.json()["total"] == 1
+        r3 = client.get("/api/catalog/artists?letter=j")
+        assert [a["artist"] for a in r3.json()["artists"]] == ["John Coltrane"]

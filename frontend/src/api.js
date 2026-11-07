@@ -48,8 +48,20 @@ export const api = {
     if (params.rip) qs.set('rip', params.rip)
     if (params.quality) qs.set('quality', params.quality)
     if (params.sort) qs.set('sort', params.sort)
+    if (params.artist) qs.set('artist', params.artist)
+    if (params.limit) qs.set('limit', params.limit)
+    if (params.offset) qs.set('offset', params.offset)
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
     return request(`/api/catalog/groups${suffix}`)
+  },
+  catalogArtists: (params = {}) => {
+    const qs = new URLSearchParams()
+    if (params.q) qs.set('q', params.q)
+    if (params.letter) qs.set('letter', params.letter)
+    if (params.limit) qs.set('limit', params.limit)
+    if (params.offset) qs.set('offset', params.offset)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return request(`/api/catalog/artists${suffix}`)
   },
   catalogCovers: () => post('/api/catalog/covers'),
   coverProxy: (url) => `/api/catalog/cover?url=${encodeURIComponent(url)}`,
