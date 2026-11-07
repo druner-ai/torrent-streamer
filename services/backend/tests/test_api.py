@@ -2,6 +2,7 @@
 import base64
 import os
 import sqlite3
+import subprocess
 
 # DB_PATH до импорта main: in-memory SQLite, чтобы не трогать реальную БД.
 os.environ["DB_PATH"] = ":memory:"
@@ -1221,3 +1222,104 @@ def test_catalog_artists_endpoint(tmp_path):
         assert r2.json()["total"] == 1
         r3 = client.get("/api/catalog/artists?letter=j")
         assert [a["artist"] for a in r3.json()["artists"]] == ["John Coltrane"]
+
+
+# ---------- плеер: repeat/shuffle, автопереход, персистенция ----------
+def test_repeat_shuffle_endpoints(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        r = client.post("/api/player/repeat", json={"mode": "all"})
+        assert r.status_code == 200 and r.json()["repeat"] == "all"
+        r = client.post("/api/player/repeat", json={"mode": "bogus"})
+        assert r.status_code == 400
+        r = client.post("/api/player/shuffle", json={"on": True})
+        assert r.status_code == 200 and r.json()["shuffle"] is True
+        with patch.object(main, "_ts_cmd", return_value={"state": "stop"}):
+            p = client.get("/api/player").json()
+        assert p["repeat"] == "all" and p["shuffle"] is True
+        # возврат к дефолтам, чтобы не влиять на другие тесты
+        client.post("/api/player/repeat", json={"mode": "off"})
+        client.post("/api/player/shuffle", json={"on": False})
+
+
+def test_auto_advance_modes():
+    started = []
+    with patch.object(main, "_start_track", side_effect=lambda a, i: started.append((a, i))), \
+         patch.object(main, "_persist_player_state"):
+        q = [{"aid": 1, "idx": 0}, {"aid": 1, "idx": 1}, {"aid": 1, "idx": 2}]
+        # обычный next
+        with patch.object(main, "_QUEUE", q), patch.object(main, "_QUEUE_POS", 0), \
+             patch.object(main, "_REPEAT", "off"):
+            main._auto_advance()
+            assert started[-1] == (1, 1) and main._QUEUE_POS == 1
+        # конец очереди, repeat off — стоим
+        with patch.object(main, "_QUEUE", q), patch.object(main, "_QUEUE_POS", 2), \
+             patch.object(main, "_REPEAT", "off"):
+            main._auto_advance()
+            assert started[-1] == (1, 1) and main._QUEUE_POS == 2
+        # конец очереди, repeat all — заворот на начало
+        with patch.object(main, "_QUEUE", q), patch.object(main, "_QUEUE_POS", 2), \
+             patch.object(main, "_REPEAT", "all"), patch.object(main, "_SHUFFLE", False):
+            main._auto_advance()
+            assert started[-1] == (1, 0) and main._QUEUE_POS == 0
+        # repeat one — тот же трек
+        with patch.object(main, "_QUEUE", q), patch.object(main, "_QUEUE_POS", 1), \
+             patch.object(main, "_REPEAT", "one"):
+            main._auto_advance()
+            assert started[-1] == (1, 1) and main._QUEUE_POS == 1
+
+
+def test_apply_shuffle_keeps_current_first():
+    q = [{"aid": 1, "idx": i} for i in range(10)]
+    with patch.object(main, "_QUEUE", q), patch.object(main, "_QUEUE_POS", 4):
+        main._apply_shuffle()
+        assert main._QUEUE[0] == {"aid": 1, "idx": 4}
+        assert main._QUEUE_POS == 0
+        assert sorted(e["idx"] for e in main._QUEUE) == list(range(10))
+
+
+def test_player_state_persistence_roundtrip(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        q = [{"aid": 7, "idx": 2}, {"aid": 7, "idx": 3}]
+        with patch.object(main, "_QUEUE", q), patch.object(main, "_QUEUE_POS", 1), \
+             patch.object(main, "_REPEAT", "all"), patch.object(main, "_SHUFFLE", True):
+            main._persist_player_state()
+        with patch.object(main, "_QUEUE", []), patch.object(main, "_QUEUE_POS", -1), \
+             patch.object(main, "_REPEAT", "off"), patch.object(main, "_SHUFFLE", False):
+            main._restore_player_state()
+            assert main._QUEUE == q
+            assert main._QUEUE_POS == 1
+            assert main._REPEAT == "all" and main._SHUFFLE is True
+
+
+def test_measure_gain_parses_and_clamps():
+    stderr = b"[Parsed_ebur128_0] Summary:\n  Integrated loudness:\n    I:         -23.0 LUFS\n"
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=stderr)
+    with patch.object(main.subprocess, "run", return_value=fake):
+        g = main._measure_gain("/nonexistent.flac")
+    assert g is not None and abs(g - 5.0) < 0.01  # -18 - (-23)
+    stderr_quiet = b"    I:         -45.0 LUFS\n"
+    fake2 = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=stderr_quiet)
+    with patch.object(main.subprocess, "run", return_value=fake2):
+        g2 = main._measure_gain("/nonexistent.flac")
+    assert g2 == main._RG_CLAMP_DB  # clamp +12
+    fake3 = subprocess.CompletedProcess(args=[], returncode=1, stdout=b"", stderr=b"error")
+    with patch.object(main.subprocess, "run", return_value=fake3):
+        assert main._measure_gain("/nonexistent.flac") is None
+
+
+def test_replaygain_endpoint(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), \
+         patch.object(main, "_measure_all_gains"):  # не запускаем фоновый замер в тесте
+        r = client.post("/api/player/replaygain", json={"on": True})
+        assert r.status_code == 200 and r.json()["replaygain"] is True
+        with patch.object(main, "_ts_cmd", return_value={"state": "stop"}):
+            assert client.get("/api/player").json()["replaygain"] is True
+        r = client.post("/api/player/replaygain", json={"on": False})
+        assert r.json()["replaygain"] is False
+        with patch.object(main, "_ts_cmd", return_value={"state": "stop"}):
+            assert client.get("/api/player").json()["replaygain"] is False
+
+
+def test_wav_path_rg_variant():
+    assert main._wav_path(3, 1) == "/tmp/oaat_stream_3_1.wav"
+    assert main._wav_path(3, 1, rg=True) == "/tmp/oaat_stream_3_1_rg.wav"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
 import { usePolling } from './hooks/usePolling.js'
 import AlbumModal from './components/AlbumModal.jsx'
@@ -13,6 +13,37 @@ import Artists from './pages/Artists.jsx'
 import Library from './pages/Library.jsx'
 import Queue from './pages/Queue.jsx'
 import Tracker from './pages/Tracker.jsx'
+
+// Короткий тихий WAV (моно 8 кГц, 0.5 с тишины) — зациклен, пока играет трек:
+// без играющего media-элемента Android/Chrome не поднимает Media Session
+// (нет управления в шторе и на локскрине). Звук — цифровая тишина, безвреден.
+function makeSilentWav(seconds = 0.5) {
+  const rate = 8000
+  const n = Math.floor(rate * seconds)
+  const buf = new ArrayBuffer(44 + n)
+  const v = new DataView(buf)
+  const ws = (off, s) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i))
+  }
+  ws(0, 'RIFF')
+  v.setUint32(4, 36 + n, true)
+  ws(8, 'WAVEfmt ')
+  v.setUint32(16, 16, true)
+  v.setUint16(20, 1, true) // PCM
+  v.setUint16(22, 1, true) // mono
+  v.setUint32(24, rate, true)
+  v.setUint32(28, rate, true)
+  v.setUint16(32, 1, true)
+  v.setUint16(34, 8, true) // 8 бит
+  ws(36, 'data')
+  v.setUint32(40, n, true)
+  for (let i = 0; i < n; i++) v.setUint8(44 + i, 128) // цифровая тишина
+  const bytes = new Uint8Array(buf)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return `data:audio/wav;base64,${btoa(bin)}`
+}
+const SILENT_WAV = makeSilentWav()
 
 export default function App() {
   const [view, setView] = useState('library')
@@ -219,6 +250,152 @@ export default function App() {
     [pushToast],
   )
 
+  const handleCycleRepeat = useCallback(async () => {
+    const modes = ['off', 'all', 'one']
+    const nextMode = modes[(modes.indexOf(player.repeat || 'off') + 1) % modes.length]
+    try {
+      await api.playerRepeat(nextMode)
+      loadPlayer()
+    } catch (e) {
+      pushToast(e.message, 'error')
+    }
+  }, [player.repeat, loadPlayer, pushToast])
+
+  const handleToggleShuffle = useCallback(async () => {
+    try {
+      const res = await api.playerShuffle(!player.shuffle)
+      if (res.shuffle) pushToast('Очередь перемешана', 'success')
+      loadPlayer()
+      loadQueue()
+    } catch (e) {
+      pushToast(e.message, 'error')
+    }
+  }, [player.shuffle, loadPlayer, loadQueue, pushToast])
+
+  const handleToggleReplayGain = useCallback(async () => {
+    const on = !player.replaygain
+    try {
+      await api.playerReplayGain(on)
+      pushToast(
+        on
+          ? 'ReplayGain включён — громкость выравнивается (замер библиотеки идёт в фоне)'
+          : 'ReplayGain выключен',
+        'success',
+      )
+      loadPlayer()
+    } catch (e) {
+      pushToast(e.message, 'error')
+    }
+  }, [player.replaygain, loadPlayer, pushToast])
+
+  // --- Media Session: управление в шторе/локскрине и с кнопок Bluetooth-гарнитуры ---
+  const silentRef = useRef(null)
+  useEffect(() => {
+    const el = silentRef.current
+    if (!el) return
+    if (player.state === 'playing') el.play().catch(() => {})
+    else el.pause()
+  }, [player.state])
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    const ms = navigator.mediaSession
+    ms.metadata = player.track
+      ? new MediaMetadata({
+          title: player.track,
+          artist: player.artist || '',
+          album: player.album || '',
+          artwork: player.album_id != null
+            ? [{
+                src: new URL(api.coverUrl(player.album_id), window.location.origin).href,
+                sizes: '500x500',
+                type: 'image/jpeg',
+              }]
+            : [],
+        })
+      : null
+    ms.playbackState =
+      player.state === 'playing' ? 'playing' : player.state === 'paused' ? 'paused' : 'none'
+    const set = (action, fn) => {
+      try {
+        ms.setActionHandler(action, fn)
+      } catch {
+        /* действие не поддерживается браузером */
+      }
+    }
+    set('play', () => handlePlayerCmd('play'))
+    set('pause', () => handlePlayerCmd('pause'))
+    set('previoustrack', () => handlePlayerCmd('prev'))
+    set('nexttrack', () => handlePlayerCmd('next'))
+    set('seekto', (d) => {
+      if (d.seekTime != null) handleSeek(d.seekTime)
+    })
+    const dur = Number(player.duration) || 0
+    if (dur > 0) {
+      try {
+        ms.setPositionState({
+          duration: dur,
+          playbackRate: 1,
+          position: Math.min(dur, Math.max(0, Number(player.elapsed) || 0)),
+        })
+      } catch {
+        /* positionState опционален */
+      }
+    }
+  }, [player, handlePlayerCmd, handleSeek])
+
+  // --- горячие клавиши: пробел, стрелки (перемотка ±10 с / громкость ±5) ---
+  useEffect(() => {
+    const onKey = (e) => {
+      const t = e.target
+      if (
+        t &&
+        (t.tagName === 'INPUT' ||
+          t.tagName === 'TEXTAREA' ||
+          t.tagName === 'SELECT' ||
+          t.isContentEditable)
+      )
+        return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const dur = Number(player.duration) || 0
+      const pos = Number(player.elapsed) || 0
+      const vol = Number(player.volume ?? 100)
+      switch (e.key) {
+        case ' ':
+        case 'Spacebar':
+          if (t && t.tagName === 'BUTTON') return // не конфликтуют с фокусом кнопки
+          if (player.state === 'stop') return
+          e.preventDefault()
+          handlePlayerCmd(player.state === 'playing' ? 'pause' : 'play')
+          break
+        case 'ArrowRight':
+          if (dur > 0) {
+            e.preventDefault()
+            handleSeek(Math.min(dur - 1, pos + 10))
+          }
+          break
+        case 'ArrowLeft':
+          if (dur > 0) {
+            e.preventDefault()
+            handleSeek(Math.max(0, pos - 10))
+          }
+          break
+        case 'ArrowUp':
+          e.preventDefault()
+          handleVolume(Math.min(100, vol + 5))
+          break
+        case 'ArrowDown':
+          e.preventDefault()
+          handleVolume(Math.max(0, vol - 5))
+          break
+        default:
+          break
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [player, handlePlayerCmd, handleSeek, handleVolume])
+
   const isPlayingAlbum = useCallback(
     (album) => player.state === 'playing' && player.album_id === album.id,
     [player],
@@ -289,8 +466,14 @@ export default function App() {
           sleepMinutes={sleepMinutes}
           onOpenAlbum={(id) => setOpenAlbumId(id)}
           onNotify={pushToast}
+          onShuffle={handleToggleShuffle}
+          onRepeat={handleCycleRepeat}
+          onReplayGain={handleToggleReplayGain}
         />
       </main>
+
+      {/* тихий зацикленный WAV активирует Media Session на мобильных */}
+      <audio ref={silentRef} src={SILENT_WAV} loop preload="auto" className="hidden" />
 
       <BottomNav view={view} onNavigate={setView} />
 

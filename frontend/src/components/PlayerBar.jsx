@@ -1,9 +1,13 @@
 import {
+  AudioLines,
   ChevronDown,
   Disc3,
   MonitorSpeaker,
   Pause,
   Play,
+  Repeat,
+  Repeat1,
+  Shuffle,
   SkipBack,
   SkipForward,
   Timer,
@@ -318,12 +322,26 @@ function EndpointSelect({ onNotify }) {
   )
 }
 
-function Controls({ player, onCmd }) {
+function Controls({ player, onCmd, onShuffle, onRepeat }) {
   const stopped = player.state === 'stop'
   const playing = player.state === 'playing'
+  const shuffle = !!player.shuffle
+  const repeat = player.repeat || 'off'
+  const RepeatIcon = repeat === 'one' ? Repeat1 : Repeat
 
   return (
-    <div className="flex items-center justify-center gap-4">
+    <div className="flex items-center justify-center gap-3">
+      <button
+        type="button"
+        onClick={onShuffle}
+        aria-label="Перемешивание"
+        title={shuffle ? 'Перемешивание: вкл' : 'Перемешивание: выкл'}
+        className={`transition-colors ${
+          shuffle ? 'text-primary' : 'text-text-muted hover:text-text-primary'
+        }`}
+      >
+        <Shuffle size={16} />
+      </button>
       <button
         type="button"
         disabled={stopped}
@@ -355,7 +373,42 @@ function Controls({ player, onCmd }) {
       >
         <SkipForward size={20} className="fill-current" />
       </button>
+      <button
+        type="button"
+        onClick={onRepeat}
+        aria-label="Повтор"
+        title={
+          repeat === 'all' ? 'Повтор очереди' : repeat === 'one' ? 'Повтор трека' : 'Без повтора'
+        }
+        className={`transition-colors ${
+          repeat === 'off' ? 'text-text-muted hover:text-text-primary' : 'text-primary'
+        }`}
+      >
+        <RepeatIcon size={16} />
+      </button>
     </div>
+  )
+}
+
+function ReplayGainToggle({ active, onToggle }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label="Выравнивание громкости"
+      title={
+        active
+          ? 'ReplayGain: вкл (громкость выровнена к −18 LUFS)'
+          : 'ReplayGain: выкл (нажмите, чтобы выравнивать громкость)'
+      }
+      className={`flex items-center gap-1.5 rounded-sm px-2 py-1 text-[12px] transition-colors ${
+        active
+          ? 'bg-primary/10 text-primary'
+          : 'text-text-muted hover:bg-surface-2 hover:text-text-primary'
+      }`}
+    >
+      <AudioLines size={18} />
+    </button>
   )
 }
 
@@ -368,6 +421,9 @@ export default function PlayerBar({
   sleepMinutes,
   onOpenAlbum,
   onNotify,
+  onShuffle,
+  onRepeat,
+  onReplayGain,
 }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const hasTrack = player.state !== 'stop' && player.album_id != null
@@ -392,8 +448,8 @@ export default function PlayerBar({
           </span>
         </button>
 
-        <div className="ml-auto flex w-[220px] shrink-0 justify-center">
-          <Controls player={player} onCmd={onCmd} />
+        <div className="ml-auto flex w-[260px] shrink-0 justify-center">
+          <Controls player={player} onCmd={onCmd} onShuffle={onShuffle} onRepeat={onRepeat} />
         </div>
 
         <div className="flex flex-1 items-center gap-4">
@@ -401,6 +457,7 @@ export default function PlayerBar({
         </div>
 
         <VolumeSlider player={player} onVolume={onVolume} />
+        <ReplayGainToggle active={!!player.replaygain} onToggle={onReplayGain} />
         <EndpointSelect onNotify={onNotify} />
         <SleepMenu sleepMinutes={sleepMinutes} onSleep={onSleep} />
       </div>
@@ -492,9 +549,10 @@ export default function PlayerBar({
             <div className="w-full">
               <SeekSlider player={player} onSeek={onSeek} />
             </div>
-            <Controls player={player} onCmd={onCmd} />
+            <Controls player={player} onCmd={onCmd} onShuffle={onShuffle} onRepeat={onRepeat} />
             <div className="flex w-full items-center justify-between">
               <VolumeSlider player={player} onVolume={onVolume} />
+              <ReplayGainToggle active={!!player.replaygain} onToggle={onReplayGain} />
               <EndpointSelect onNotify={onNotify} />
               <SleepMenu sleepMinutes={sleepMinutes} onSleep={onSleep} />
             </div>

@@ -89,6 +89,9 @@ export const api = {
 
   player: () => request('/api/player'),
   playerCmd: (cmd) => post(`/api/player/${cmd}`),
+  playerRepeat: (mode) => post('/api/player/repeat', { mode }),
+  playerShuffle: (on) => post('/api/player/shuffle', { on }),
+  playerReplayGain: (on) => post('/api/player/replaygain', { on }),
   playerSeek: (sec) => post(`/api/player/seek?position=${sec}`),
   playerVolume: (vol) => post(`/api/player/volume?level=${vol}`),
   playerSleep: (minutes) => post(`/api/player/sleep?minutes=${minutes}`),

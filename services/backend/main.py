@@ -8,6 +8,7 @@ import hashlib
 import html
 import json
 import os
+import random
 import re
 import socket
 import sqlite3
@@ -322,6 +323,10 @@ async def lifespan(_app):
     _start_ts(_ep_addr(_active_ep_name()) or "")
     _watchdog = threading.Thread(target=_ep_watchdog, daemon=True)
     _watchdog.start()
+    # очередь/режимы переживают рестарт; монитор автоперехода ловит конец трека
+    _restore_player_state()
+    _monitor = threading.Thread(target=_player_monitor, daemon=True)
+    _monitor.start()
     # обложки каталога: одноразовая миграция URL в тамбнейлы + фоновое обогащение
     try:
         n = _migrate_cover_thumbs()
@@ -351,6 +356,8 @@ _OAAT_VOLUME = 100
 _OAAT_FORMAT = None
 _QUEUE = []          # очередь воспроизведения: [{"aid": int, "idx": int}, ...]
 _QUEUE_POS = -1      # позиция текущего трека в очереди; -1 = очереди нет
+_REPEAT = "off"      # off | all | one — режим повтора очереди
+_SHUFFLE = False     # перемешанный порядок очереди
 _SLEEP_TIMER = None  # таймер сна (threading.Timer или None)
 _SLEEP_MINUTES = None  # установленное значение таймера — отдаётся в GET /api/player
 
@@ -428,7 +435,8 @@ def _schema(c):
     c.execute("""CREATE TABLE IF NOT EXISTS tracks(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         album_id INTEGER, path TEXT, name TEXT, size INTEGER)""")
-    for col in ("duration REAL", "title TEXT", "format TEXT", "year TEXT", "genre TEXT"):
+    for col in ("duration REAL", "title TEXT", "format TEXT", "year TEXT", "genre TEXT",
+                "gain_db REAL"):
         with contextlib.suppress(sqlite3.OperationalError):
             c.execute(f"ALTER TABLE tracks ADD COLUMN {col}")
     c.execute("""CREATE TABLE IF NOT EXISTS favorites(
@@ -1935,19 +1943,103 @@ _DECODE_JOBS: set = set()
 _DECODE_LOCK = threading.Lock()
 
 
-def _wav_path(aid: int, idx: int) -> str:
-    return f"/tmp/oaat_stream_{aid}_{idx}.wav"
+def _wav_path(aid: int, idx: int, rg: bool = False) -> str:
+    return f"/tmp/oaat_stream_{aid}_{idx}{'_rg' if rg else ''}.wav"
+
+
+# ---------- ReplayGain (EBU R128): выравнивание громкости между релизами ----------
+_RG_TARGET_LUFS = -18.0  # компромисс между Spotify (-14) и EBU R128 (-23)
+_RG_CLAMP_DB = 12.0
+
+
+def _rg_enabled() -> bool:
+    with contextlib.suppress(Exception):
+        return _get_setting("replaygain") == "1"
+    return False
+
+
+def _track_gain_db(aid: int, idx: int) -> float | None:
+    with contextlib.suppress(Exception), db() as c:
+        row = c.execute("SELECT gain_db FROM tracks WHERE album_id=? ORDER BY path "
+                        "LIMIT 1 OFFSET ?", (aid, idx)).fetchone()
+        if row and row["gain_db"] is not None:
+            return float(row["gain_db"])
+    return None
+
+
+def _measure_gain(abs_path: str) -> float | None:
+    """интегрированная громкость трека (EBU R128) → gain к целевому уровню, dB."""
+    try:
+        p = subprocess.run([FFMPEG, "-i", abs_path, "-map", "a:0",
+                            "-af", "ebur128=framelog=quiet", "-f", "null", "-"],
+                           check=False, capture_output=True, timeout=600)
+        m = re.search(rb"I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", p.stderr)
+        if not m or p.returncode != 0:
+            return None
+        loudness = float(m.group(1))
+        if loudness < -69.5:  # тише порога измерения R128 — считаем тишиной
+            return None
+        gain = _RG_TARGET_LUFS - loudness
+        return max(-_RG_CLAMP_DB, min(_RG_CLAMP_DB, gain))
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _measure_and_store_gain(aid: int, idx: int, abs_path: str) -> float | None:
+    gain = _measure_gain(abs_path)
+    if gain is not None:
+        with contextlib.suppress(Exception), db() as c:
+            c.execute("UPDATE tracks SET gain_db=? WHERE album_id=? AND rowid="
+                      "(SELECT rowid FROM tracks WHERE album_id=? ORDER BY path "
+                      "LIMIT 1 OFFSET ?)", (gain, aid, aid, idx))
+            c.commit()
+    return gain
+
+
+def _measure_all_gains():
+    """фоновый замер громкости всех треков библиотеки (запуск при включении ReplayGain)."""
+    with db() as c:
+        rows = c.execute(
+            "SELECT tr.id, tr.path, a.hash FROM tracks tr "
+            "JOIN albums a ON a.id=tr.album_id WHERE tr.gain_db IS NULL").fetchall()
+    save_paths: dict = {}  # hash → save_path (кэш на альбом)
+    n = 0
+    for r in rows:
+        h = r["hash"]
+        if h not in save_paths:
+            sp = None
+            with contextlib.suppress(Exception):
+                info = QB().find_by_hash(h)
+                sp = info.get("save_path") if info else None
+            save_paths[h] = sp or ""
+        if not save_paths[h]:
+            continue
+        abs_path = os.path.join(save_paths[h], r["path"])
+        if not os.path.exists(abs_path):
+            continue
+        gain = _measure_gain(abs_path)
+        if gain is None:
+            continue
+        with contextlib.suppress(Exception), db() as c:
+            c.execute("UPDATE tracks SET gain_db=? WHERE id=?", (gain, r["id"]))
+            c.commit()
+        n += 1
+    print(f"[replaygain] замерено треков: {n}", flush=True)
 
 
 def _predecode(aid: int, idx: int, abs_path: str):
     """фоновое декодирование FLAC/DSD/MP3 → WAV (lossless; для PCM-кодеков бит-перфект),
-    чтобы play/next был мгновенным, а не ждал синхронный ffmpeg."""
+    чтобы play/next был мгновенным, а не ждал синхронный ffmpeg.
+    При включённом ReplayGain и известном gain — декодирует сразу rg-вариант."""
     if Path(abs_path).suffix.lower() == ".wav":
         return
-    wav = _wav_path(aid, idx)
+    rg_on = _rg_enabled()
+    gain = _track_gain_db(aid, idx) if rg_on else None
+    want_rg = bool(rg_on and gain is not None)
+    wav = _wav_path(aid, idx, rg=want_rg)
     if os.path.exists(wav) and os.path.getsize(wav) > 0:
         return
-    key = (aid, idx)
+    key = (aid, idx, want_rg)
     with _DECODE_LOCK:
         if key in _DECODE_JOBS:
             return
@@ -1955,11 +2047,20 @@ def _predecode(aid: int, idx: int, abs_path: str):
 
     def job():
         try:
-            tmp = wav + ".part"
-            conv = subprocess.run([FFMPEG, "-y", "-i", abs_path, "-f", "wav", tmp],
-                                  check=False, capture_output=True)
+            g = gain
+            out = wav
+            if rg_on and g is None:
+                g = _measure_and_store_gain(aid, idx, abs_path)
+                if g is not None:
+                    out = _wav_path(aid, idx, rg=True)
+            tmp = out + ".part"
+            cmd = [FFMPEG, "-y", "-i", abs_path]
+            if rg_on and g is not None:
+                cmd += ["-af", f"volume={g:.2f}dB"]
+            cmd += ["-f", "wav", tmp]
+            conv = subprocess.run(cmd, check=False, capture_output=True)
             if conv.returncode == 0:
-                os.replace(tmp, wav)
+                os.replace(tmp, out)
             else:
                 with contextlib.suppress(OSError):
                     os.remove(tmp)
@@ -2004,17 +2105,27 @@ def _start_track(aid, idx, offset=0.0):
     # ts-controller стримит только WAV → декодируем остальное (FLAC/DSD/mp3)
     # через ffmpeg в lossless PCM; перемотку делает сам контроллер (без -ss).
     if Path(abs_path).suffix.lower() != ".wav":
-        stream_path = _wav_path(aid, idx)
+        rg_on = _rg_enabled()
+        gain = _track_gain_db(aid, idx) if rg_on else None
+        use_rg = gain is not None
+        stream_path = _wav_path(aid, idx, rg=use_rg)
         if not (os.path.exists(stream_path) and os.path.getsize(stream_path) > 0):
             # этот трек уже может декодироваться в фоне — дожидаемся, а не
             # запускаем второй ffmpeg (двойная нагрузка + подмена WAV на лету)
             _wait_predecode(aid, idx)
+            # фоновая job могла замерить gain и записать rg-вариант — подхватываем
+            if rg_on and not use_rg:
+                g2 = _track_gain_db(aid, idx)
+                rg_path = _wav_path(aid, idx, rg=True)
+                if g2 is not None and os.path.exists(rg_path) and os.path.getsize(rg_path) > 0:
+                    stream_path, use_rg, gain = rg_path, True, g2
         if not (os.path.exists(stream_path) and os.path.getsize(stream_path) > 0):
             # не успели пред-декодировать — декодируем синхронно (fallback)
-            conv = subprocess.run(
-                [FFMPEG, "-y", "-i", abs_path, "-f", "wav", stream_path],
-                check=False, capture_output=True,
-            )
+            cmd = [FFMPEG, "-y", "-i", abs_path]
+            if use_rg and gain is not None:
+                cmd += ["-af", f"volume={gain:.2f}dB"]
+            cmd += ["-f", "wav", stream_path]
+            conv = subprocess.run(cmd, check=False, capture_output=True)
             if conv.returncode != 0:
                 with contextlib.suppress(OSError):
                     os.remove(stream_path)
@@ -2056,6 +2167,86 @@ def _build_queue(aid: int, start_idx: int):
     tracks, _, _ = _current_tracks(aid)
     _QUEUE = [{"aid": aid, "idx": i} for i in range(start_idx, len(tracks))]
     _QUEUE_POS = 0
+    if _SHUFFLE and len(_QUEUE) > 1:
+        _apply_shuffle()
+    _persist_player_state()
+
+
+# ---------- состояние плеера: персистенция, repeat/shuffle, автопереход ----------
+def _persist_player_state():
+    """сохраняет очередь/позицию/режимы — переживают рестарт backend."""
+    with contextlib.suppress(Exception):
+        _set_setting("player_state", json.dumps({
+            "queue": _QUEUE, "pos": _QUEUE_POS,
+            "repeat": _REPEAT, "shuffle": _SHUFFLE}))
+
+
+def _restore_player_state():
+    global _QUEUE, _QUEUE_POS, _REPEAT, _SHUFFLE
+    with contextlib.suppress(Exception):
+        raw = _get_setting("player_state")
+        if not raw:
+            return
+        d = json.loads(raw)
+        _QUEUE = [{"aid": int(e["aid"]), "idx": int(e["idx"])}
+                  for e in d.get("queue", []) if isinstance(e, dict)]
+        _QUEUE_POS = int(d.get("pos", -1))
+        _REPEAT = d.get("repeat") if d.get("repeat") in ("off", "all", "one") else "off"
+        _SHUFFLE = bool(d.get("shuffle", False))
+
+
+def _apply_shuffle():
+    """перемешивает очередь, оставляя текущий трек первым (честный порядок виден в UI)."""
+    global _QUEUE_POS
+    if not _QUEUE:
+        return
+    if 0 <= _QUEUE_POS < len(_QUEUE):
+        cur = _QUEUE.pop(_QUEUE_POS)
+        random.shuffle(_QUEUE)
+        _QUEUE.insert(0, cur)
+        _QUEUE_POS = 0
+    else:
+        random.shuffle(_QUEUE)
+
+
+def _auto_advance():
+    """трек закончился естественно — что дальше по режимам repeat/shuffle."""
+    global _QUEUE_POS
+    if not _QUEUE or not (0 <= _QUEUE_POS < len(_QUEUE)):
+        return
+    if _REPEAT == "one":
+        entry = _QUEUE[_QUEUE_POS]
+        _start_track(entry["aid"], entry["idx"])
+        return
+    npos = _QUEUE_POS + 1
+    if npos >= len(_QUEUE):
+        if _REPEAT != "all":
+            return  # очередь кончилась, repeat выкл — остаёмся в stop
+        npos = 0
+        if _SHUFFLE:
+            _apply_shuffle()  # новый круг — новая раскладка
+    entry = _QUEUE[npos]
+    _start_track(entry["aid"], entry["idx"])
+    _QUEUE_POS = npos
+    _persist_player_state()
+
+
+def _player_monitor():
+    """ловит естественный конец трека (playing→stop при живой очереди) и идёт дальше.
+
+    Пользовательский stop отличаем по очищенной очереди: player_cmd('stop')
+    сбрасывает _QUEUE до того, как контроллер замолкает."""
+    was_playing = False
+    while True:
+        time.sleep(1.0)
+        resp = _ts_cmd({"cmd": "status"})
+        state = resp.get("state", "stop") if isinstance(resp, dict) else "stop"
+        if was_playing and state == "stop" and _QUEUE and 0 <= _QUEUE_POS < len(_QUEUE):
+            try:
+                _auto_advance()
+            except Exception as e:  # noqa: BLE001 — сбой старта не роняет монитор
+                print(f"[player] автопереход не удался: {e}", flush=True)
+        was_playing = state == "playing"
 
 
 @app.post("/api/albums/{aid}/play")
@@ -2125,13 +2316,60 @@ def player():
         return {"state": "stop", "album_id": None, "track_index": None, "track": None,
                 "elapsed": None, "duration": None, "album": None, "artist": None,
                 "cover_url": None, "volume": _OAAT_VOLUME, "format": None,
-                "sleep_minutes": _SLEEP_MINUTES}
+                "sleep_minutes": _SLEEP_MINUTES,
+                "repeat": _REPEAT, "shuffle": _SHUFFLE,
+                "replaygain": _rg_enabled(),
+                "queue_pos": _QUEUE_POS, "queue_len": len(_QUEUE)}
     return {"state": state, "album_id": _OAAT_ALBUM_ID, "track_index": _OAAT_TRACK_INDEX,
             "track": _OAAT_TRACK_TITLE, "elapsed": resp.get("elapsed"),
             "duration": resp.get("duration") or _OAAT_DURATION,
             "album": _OAAT_ALBUM_NAME, "artist": _OAAT_ARTIST, "cover_url": _OAAT_COVER_URL,
             "volume": _OAAT_VOLUME, "format": _OAAT_FORMAT,
-            "sleep_minutes": _SLEEP_MINUTES}
+            "sleep_minutes": _SLEEP_MINUTES,
+            "repeat": _REPEAT, "shuffle": _SHUFFLE,
+            "replaygain": _rg_enabled(),
+            "queue_pos": _QUEUE_POS, "queue_len": len(_QUEUE)}
+
+
+class RepeatReq(BaseModel):
+    mode: str  # off | all | one
+
+
+@app.post("/api/player/repeat")
+def player_repeat(req: RepeatReq):
+    global _REPEAT
+    if req.mode not in ("off", "all", "one"):
+        raise HTTPException(400, "режим: off | all | one")
+    _REPEAT = req.mode
+    _persist_player_state()
+    return {"ok": True, "repeat": _REPEAT}
+
+
+class ShuffleReq(BaseModel):
+    on: bool
+
+
+@app.post("/api/player/shuffle")
+def player_shuffle(req: ShuffleReq):
+    global _SHUFFLE
+    _SHUFFLE = req.on
+    if _SHUFFLE:
+        _apply_shuffle()
+    _persist_player_state()
+    return {"ok": True, "shuffle": _SHUFFLE}
+
+
+class ReplayGainReq(BaseModel):
+    on: bool
+
+
+@app.post("/api/player/replaygain")
+def player_replaygain(req: ReplayGainReq):
+    """вкл/выкл выравнивание громкости; при включении — фоновый замер всей библиотеки."""
+    _set_setting("replaygain", "1" if req.on else "0")
+    if req.on:
+        threading.Thread(target=_measure_all_gains, daemon=True).start()
+    return {"ok": True, "replaygain": req.on}
 
 
 class EndpointSelectReq(BaseModel):
@@ -2267,6 +2505,7 @@ def player_cmd(cmd: str):
         _OAAT_ARTIST = None
         _OAAT_COVER_URL = None
         _OAAT_FORMAT = None
+        _persist_player_state()
         return {"ok": True, "cmd": cmd}
 
     if cmd == "pause":
@@ -2284,15 +2523,19 @@ def player_cmd(cmd: str):
     if cmd in ("next", "prev"):
         step = 1 if cmd == "next" else -1
         if _QUEUE_POS >= 0 and _QUEUE:
-            # идём по явной очереди
+            # идём по явной очереди; repeat=all заворачивает с краёв
             npos = _QUEUE_POS + step
             if not (0 <= npos < len(_QUEUE)):
-                return player_cmd("stop")  # конец очереди
+                if _REPEAT == "all":
+                    npos = 0 if npos >= len(_QUEUE) else len(_QUEUE) - 1
+                else:
+                    return player_cmd("stop")  # конец очереди
             entry = _QUEUE[npos]
             # позицию двигаем ТОЛЬКО после успешного старта — иначе при ошибке
             # (трек ещё качается / ffmpeg упал) очередь разъезжается с плеером
             result = _start_track(entry["aid"], entry["idx"])
             _QUEUE_POS = npos
+            _persist_player_state()
             return result
         # фолбэк: соседний трек текущего альбома
         if _OAAT_ALBUM_ID is None:
@@ -2322,6 +2565,7 @@ def queue_add(req: QueueReq):
     if _QUEUE_POS < 0 and _OAAT_ALBUM_ID is None:
         with contextlib.suppress(HTTPException):
             queue_jump(0)
+    _persist_player_state()
     return {"ok": True, "queue_len": len(_QUEUE), "pos": _QUEUE_POS}
 
 
@@ -2334,6 +2578,7 @@ def queue_jump(pos: int):
     # как в next/prev: позицию — только после успешного старта
     result = _start_track(entry["aid"], entry["idx"])
     _QUEUE_POS = pos
+    _persist_player_state()
     return result
 
 
