@@ -2877,10 +2877,22 @@ def endpoints_update(req: EndpointSelectReq):
         raise HTTPException(400, f"нет сборки для платформы {osname}/{arch}")
     triple, ext = tgt
     asset = f"tune-bridge-{triple}.{ext}"
-    url = f"https://github.com/{_GITHUB_REPO}/releases/latest/download/{asset}"
+    # Шорткат github.com/.../releases/latest/download/<asset> с некоторых сетей
+    # (Минск) отдаёт 404 без редиректа — идём через API: releases/latest →
+    # assets/{id} c Accept: application/octet-stream.
     try:
-        r = requests.get(url, headers=_github_headers(), timeout=300,
-                         allow_redirects=True)
+        r = requests.get(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+            headers=_github_headers(), timeout=30)
+        r.raise_for_status()
+        assets = r.json().get("assets", [])
+        aid = next((a["id"] for a in assets if a.get("name") == asset), None)
+        if aid is None:
+            raise HTTPException(502, f"в релизе нет ассета {asset}")
+        r = requests.get(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/releases/assets/{aid}",
+            headers={**_github_headers(), "Accept": "application/octet-stream"},
+            timeout=300, allow_redirects=True)
         r.raise_for_status()
     except requests.RequestException as e:
         raise HTTPException(502, f"скачивание релиза не удалось: {e}") from e

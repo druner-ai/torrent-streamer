@@ -1550,9 +1550,17 @@ def test_endpoints_update_flow():
             return self._json
 
     def fake_get(url, **kw):
-        if "api.github.com" in url:
+        if url.endswith("/releases/latest"):
+            return FakeResp(json_data={
+                "tag_name": "v9.9.9", "published_at": "now",
+                "assets": [
+                    {"id": 7, "name": "tune-bridge-x86_64-unknown-linux-gnu.tar.gz"},
+                    {"id": 8, "name": "tune-bridge-aarch64-apple-darwin.tar.gz"},
+                ]})
+        if "/releases/latest" in url:
             return FakeResp(json_data={"tag_name": "v9.9.9", "published_at": "now"})
-        assert url.endswith("tune-bridge-x86_64-unknown-linux-gnu.tar.gz")
+        assert url.endswith("/releases/assets/7")
+        assert kw.get("headers", {}).get("Accept") == "application/octet-stream"
         return FakeResp(content=archive)
 
     def fake_post(url, json=None, **kw):
