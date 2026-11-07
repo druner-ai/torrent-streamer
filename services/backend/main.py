@@ -1292,7 +1292,8 @@ def rutracker_status():
     """P2.12: здоровье обхода RuTracker — FlareSolverr, CF-сессия, краулинг."""
     fs: dict = {"up": False}
     try:
-        r = requests.get(f"{FLARESOLVERR_URL}/v1", timeout=5)
+        # health FlareSolverr — GET / (не /v1, там только POST)
+        r = requests.get(FLARESOLVERR_URL.rstrip("/") + "/", timeout=5)
         r.raise_for_status()
         d = r.json()
         fs = {"up": True, "version": d.get("version")}
