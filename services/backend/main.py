@@ -818,11 +818,21 @@ class CatalogDownloadReq(BaseModel):
 
 
 def _flaresolverr_get(url: str) -> str:
-    r = requests.post(f"{FLARESOLVERR_URL}/v1",
-                      json={"cmd": "request.get", "url": url, "maxTimeout": 30000},
-                      timeout=45)
-    r.raise_for_status()
-    return r.json().get("solution", {}).get("response", "") or ""
+    """страница через FlareSolverr; один retry с удлинённым таймаутом — решение
+    CF-challenge иногда не укладывается в 30с (контейнер ограничен 1 CPU)."""
+    last = None
+    for attempt, (mt, to) in enumerate(((30000, 45), (55000, 75))):
+        try:
+            r = requests.post(f"{FLARESOLVERR_URL}/v1",
+                              json={"cmd": "request.get", "url": url, "maxTimeout": mt},
+                              timeout=to)
+            r.raise_for_status()
+            return r.json().get("solution", {}).get("response", "") or ""
+        except requests.RequestException as e:
+            last = e
+            if attempt == 0:
+                time.sleep(3)
+    raise last
 
 
 def _guess_lossless(title: str) -> int | None:
@@ -1130,9 +1140,12 @@ def _run_catalog_refresh(forums: list[int], pages: int):
     _REFRESH_STATE.update(running=True, total=len(forums), done=0, crawled=0)
     try:
         for fid in forums:
-            crawled = crawl_forum(fid, pages)
-            _save_crawled(crawled)
-            _REFRESH_STATE["crawled"] += len(crawled)
+            try:
+                crawled = crawl_forum(fid, pages)
+                _save_crawled(crawled)
+                _REFRESH_STATE["crawled"] += len(crawled)
+            except Exception as e:  # noqa: BLE001 — сбой форума не рвёт остальные
+                print(f"[catalog] f={fid}: {e}", flush=True)
             _REFRESH_STATE["done"] += 1
         # обложки для релизов без cover_url (ограниченно, чтобы не вешать MusicBrainz)
         _enrich_covers(50)
