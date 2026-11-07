@@ -372,6 +372,7 @@ _QUEUE = []          # очередь воспроизведения: [{"aid": i
 _QUEUE_POS = -1      # позиция текущего трека в очереди; -1 = очереди нет
 _REPEAT = "off"      # off | all | one — режим повтора очереди
 _SHUFFLE = False     # перемешанный порядок очереди
+_DEVICE_LOST_NAME = None  # P1.7: имя выходного устройства, пропажа которого авто-паузит
 _SLEEP_TIMER = None  # таймер сна (threading.Timer или None)
 _SLEEP_MINUTES = None  # установленное значение таймера — отдаётся в GET /api/player
 
@@ -2313,16 +2314,63 @@ def _auto_advance():
     _persist_player_state()
 
 
+def _device_watch(state: str):
+    """P1.7: пропало выходное устройство (снял наушники / отключил DAC) → авто-пауза.
+
+    Устройство вернулось → переселект на нём (endpoint мог отвалиться в default)
+    и resume с той же позиции. Вызывается из _player_monitor раз в ~3с."""
+    global _DEVICE_LOST_NAME
+    if state == "stop" or (state == "playing" and _DEVICE_LOST_NAME):
+        # stop — сессия кончилась; playing при потерянном — пользователь возобновил
+        # вручную, не мешаем
+        _DEVICE_LOST_NAME = None
+        return
+    ep = _active_ep_name()
+    if ep is None:
+        return
+    st = _ep_status(ep)
+    cur = st.get("current_device") or ""
+    avail = st.get("available_devices") or []
+    if not cur:
+        return  # endpoint недоступен / старая версия — не мешаем
+    if _DEVICE_LOST_NAME is None:
+        if state == "playing" and cur not in avail:
+            player_cmd("pause")
+            _DEVICE_LOST_NAME = cur
+            print(f"[player] устройство '{cur}' пропало — авто-пауза", flush=True)
+    elif state == "paused" and _DEVICE_LOST_NAME in avail:
+        try:
+            if st.get("current_device") != _DEVICE_LOST_NAME:
+                requests.post(f"{_ep_web(ep)}/api/device",
+                              json={"device": _DEVICE_LOST_NAME},
+                              headers=_ep_headers(ep), timeout=5)
+                time.sleep(0.5)
+            player_cmd("resume")
+            print(f"[player] устройство '{_DEVICE_LOST_NAME}' вернулось — resume",
+                  flush=True)
+        except requests.RequestException as e:
+            print(f"[player] device resume не удался: {e}", flush=True)
+            return
+        _DEVICE_LOST_NAME = None
+
+
 def _player_monitor():
     """ловит естественный конец трека (playing→stop при живой очереди) и идёт дальше.
 
     Пользовательский stop отличаем по очищенной очереди: player_cmd('stop')
     сбрасывает _QUEUE до того, как контроллер замолкает."""
     was_playing = False
+    tick = 0
     while True:
         time.sleep(1.0)
         resp = _ts_cmd({"cmd": "status"})
         state = resp.get("state", "stop") if isinstance(resp, dict) else "stop"
+        tick += 1
+        if tick % 3 == 0:
+            try:
+                _device_watch(state)
+            except Exception as e:  # noqa: BLE001 — сбой watch не роняет монитор
+                print(f"[player] device_watch сбой: {e}", flush=True)
         if was_playing and state == "stop" and _QUEUE and 0 <= _QUEUE_POS < len(_QUEUE):
             try:
                 _auto_advance()
@@ -2410,6 +2458,7 @@ def player():
                 "sleep_minutes": _SLEEP_MINUTES,
                 "repeat": _REPEAT, "shuffle": _SHUFFLE,
                 "replaygain": _rg_enabled(),
+                "device_lost": _DEVICE_LOST_NAME,
                 "queue_pos": _QUEUE_POS, "queue_len": len(_QUEUE)}
     return {"state": state, "album_id": _OAAT_ALBUM_ID, "track_index": _OAAT_TRACK_INDEX,
             "track": _OAAT_TRACK_TITLE, "elapsed": resp.get("elapsed"),
@@ -2419,6 +2468,7 @@ def player():
             "sleep_minutes": _SLEEP_MINUTES,
             "repeat": _REPEAT, "shuffle": _SHUFFLE,
             "replaygain": _rg_enabled(),
+            "device_lost": _DEVICE_LOST_NAME,
             "queue_pos": _QUEUE_POS, "queue_len": len(_QUEUE)}
 
 

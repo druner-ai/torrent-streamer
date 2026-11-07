@@ -26,8 +26,10 @@ client = TestClient(main.app)
 def _clear_groups_cache():
     """кэш /api/catalog/groups не должен протекать между тестами (разные tmp БД)."""
     main._GROUPS_CACHE.clear()
+    main._DEVICE_LOST_NAME = None
     yield
     main._GROUPS_CACHE.clear()
+    main._DEVICE_LOST_NAME = None
 
 
 def test_albums_empty_when_no_albums_and_no_torrents():
@@ -1390,3 +1392,56 @@ def test_groups_cache_hit_and_clear(tmp_path):
         assert client.get("/api/catalog/groups?limit=10").json()["total"] == 1
         main._GROUPS_CACHE.clear()  # как _save_crawled после краула
         assert client.get("/api/catalog/groups?limit=10").json()["total"] == 2
+
+
+def test_device_watch_pauses_when_device_gone():
+    """P1.7: текущее устройство пропало из списка → авто-пауза."""
+    with patch.object(main, "_active_ep_name", return_value="mac"), \
+         patch.object(main, "_ep_status", return_value={
+             "current_device": "USB DAC", "available_devices": ["Speakers"],
+             "connected": True, "playing": True}), \
+         patch.object(main, "player_cmd") as pc:
+        main._device_watch("playing")
+        assert main._DEVICE_LOST_NAME == "USB DAC"
+        pc.assert_called_once_with("pause")
+
+
+def test_device_watch_resumes_and_reselects_when_device_back():
+    """P1.7: устройство вернулось → переселект (endpoint отвалился в default) + resume."""
+    with patch.object(main, "_active_ep_name", return_value="mac"), \
+         patch.object(main, "_ep_status", return_value={
+             "current_device": "Speakers",
+             "available_devices": ["Speakers", "USB DAC"],
+             "connected": True, "playing": False}), \
+         patch.object(main, "player_cmd") as pc, \
+         patch.object(main.requests, "post") as rp, \
+         patch.object(main.time, "sleep"):
+        main._DEVICE_LOST_NAME = "USB DAC"
+        main._device_watch("paused")
+        assert main._DEVICE_LOST_NAME is None
+        pc.assert_called_once_with("resume")
+        rp.assert_called_once()  # POST /api/device {"device": "USB DAC"}
+
+
+def test_device_watch_no_pause_when_device_present():
+    with patch.object(main, "_active_ep_name", return_value="mac"), \
+         patch.object(main, "_ep_status", return_value={
+             "current_device": "USB DAC", "available_devices": ["USB DAC"],
+             "connected": True, "playing": True}), \
+         patch.object(main, "player_cmd") as pc:
+        main._device_watch("playing")
+        assert main._DEVICE_LOST_NAME is None
+        pc.assert_not_called()
+
+
+def test_device_watch_manual_resume_not_hijacked():
+    """пользователь вручную возобновил при пропавшем устройстве → не мешаем."""
+    main._DEVICE_LOST_NAME = "USB DAC"
+    main._device_watch("playing")
+    assert main._DEVICE_LOST_NAME is None
+
+
+def test_device_watch_stop_clears_lost():
+    main._DEVICE_LOST_NAME = "USB DAC"
+    main._device_watch("stop")
+    assert main._DEVICE_LOST_NAME is None

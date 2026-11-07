@@ -445,6 +445,11 @@ export default function PlayerBar({
             <span className="block truncate text-[12px] text-text-secondary">
               {player.artist || player.album || 'Выберите трек'}
             </span>
+            {player.device_lost && (
+              <span className="block truncate text-[11px] font-medium text-warning">
+                ⚠ устройство «{player.device_lost}» отключено — авто-пауза
+              </span>
+            )}
           </span>
         </button>
 
