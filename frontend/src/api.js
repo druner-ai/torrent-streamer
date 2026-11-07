@@ -101,6 +101,8 @@ export const api = {
   endpoints: () => request('/api/endpoints'),
   selectEndpoint: (endpoint, device) => post('/api/endpoints/select', { endpoint, device }),
   regenerateToken: (endpoint) => post('/api/endpoints/regenerate_token', { endpoint }),
+  endpointsUpdateCheck: () => request('/api/endpoints/update_check'),
+  endpointsUpdate: (endpoint) => post('/api/endpoints/update', { endpoint }),
 
   player: () => request('/api/player'),
   playerCmd: (cmd) => post(`/api/player/${cmd}`),

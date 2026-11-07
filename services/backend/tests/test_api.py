@@ -1519,3 +1519,58 @@ def test_playlists_crud_and_play(tmp_path):
         assert client.delete(f"/api/playlists/{pid}").json()["ok"]
         assert client.get("/api/playlists").json()["playlists"] == []
         assert client.get(f"/api/playlists/{pid}").status_code == 404
+
+
+def test_endpoints_update_flow():
+    import io
+    import tarfile
+
+    # старый endpoint (нет os/arch в статусе) → 409
+    with patch.object(main, "_active_ep_name", return_value="mac"), \
+         patch.object(main, "_ep_status", return_value={"connected": True}):
+        assert client.post("/api/endpoints/update", json={}).status_code == 409
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        data = b"X" * 2048
+        ti = tarfile.TarInfo("tune-bridge")
+        ti.size = len(data)
+        tf.addfile(ti, io.BytesIO(data))
+    archive = buf.getvalue()
+
+    class FakeResp:
+        def __init__(self, content=b"", json_data=None):
+            self.content = content
+            self._json = json_data or {}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._json
+
+    def fake_get(url, **kw):
+        if "api.github.com" in url:
+            return FakeResp(json_data={"tag_name": "v9.9.9", "published_at": "now"})
+        assert url.endswith("tune-bridge-x86_64-unknown-linux-gnu.tar.gz")
+        return FakeResp(content=archive)
+
+    def fake_post(url, json=None, **kw):
+        assert url.endswith("/api/update")
+        assert base64.b64decode(json["b64"]) == b"X" * 2048
+        return FakeResp(json_data={"ok": True, "restarting": True})
+
+    with patch.object(main, "_active_ep_name", return_value="nuc"), \
+         patch.object(main, "_ep_status",
+                      return_value={"os": "linux", "arch": "x86_64", "connected": True}), \
+         patch.object(main, "_ep_web", return_value="http://ep:9741"), \
+         patch.object(main, "_ep_headers", return_value={}), \
+         patch.object(main.requests, "get", side_effect=fake_get), \
+         patch.object(main.requests, "post", side_effect=fake_post):
+        d = client.post("/api/endpoints/update", json={}).json()
+        assert d["ok"] and d["size"] == 2048
+        assert d["asset"] == "tune-bridge-x86_64-unknown-linux-gnu.tar.gz"
+
+    with patch.object(main.requests, "get", side_effect=fake_get):
+        d = client.get("/api/endpoints/update_check").json()
+        assert d["ok"] and d["latest"] == "v9.9.9"

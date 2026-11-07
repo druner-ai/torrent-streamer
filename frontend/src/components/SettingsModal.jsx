@@ -19,6 +19,8 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [regenBusy, setRegenBusy] = useState(null)
   const [rtStatus, setRtStatus] = useState(null)
   const [rtBusy, setRtBusy] = useState(false)
+  const [updLatest, setUpdLatest] = useState(null)
+  const [updBusy, setUpdBusy] = useState(null)
 
   useEffect(() => {
     if (!open) return
@@ -44,6 +46,10 @@ export default function SettingsModal({ open, onClose, notify }) {
     api
       .rutrackerStatus()
       .then((d) => alive && setRtStatus(d))
+      .catch(() => {})
+    api
+      .endpointsUpdateCheck()
+      .then((d) => alive && setUpdLatest(d.latest))
       .catch(() => {})
     return () => {
       alive = false
@@ -109,6 +115,23 @@ export default function SettingsModal({ open, onClose, notify }) {
       notify(e.message, 'error')
     } finally {
       setRtBusy(false)
+    }
+  }
+
+  async function updateEp(name) {
+    setUpdBusy(name)
+    try {
+      const d = await api.endpointsUpdate(name)
+      notify(
+        `Endpoint «${name}» обновляется (${d.asset}, ${(d.size / 1e6).toFixed(1)} МБ) — перезапуск…`,
+        'success',
+      )
+      const eps = await api.endpoints()
+      setEndpointList(eps.endpoints || [])
+    } catch (e) {
+      notify(e.message, 'error')
+    } finally {
+      setUpdBusy(null)
     }
   }
 
@@ -256,14 +279,35 @@ export default function SettingsModal({ open, onClose, notify }) {
             {endpointList.length > 0 && (
               <div>
                 <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-text-muted">
-                  Эндпоинты
+                  Эндпоинты{updLatest ? ` · доступна ${updLatest}` : ''}
                 </h3>
                 {endpointList.map((ep) => (
                   <div key={ep.name} className="mb-2 flex items-center gap-2">
-                    <span className="flex-1 truncate text-[13px] text-text-secondary">
-                      {ep.name}
-                      {ep.auto ? ' (mDNS)' : ''}
+                    <span className="min-w-0 flex-1 text-[13px] text-text-secondary">
+                      <span className="block truncate">
+                        {ep.name}
+                        {ep.auto ? ' (mDNS)' : ''}
+                      </span>
+                      {ep.version && (
+                        <span className="block font-mono text-[10.5px] text-text-muted">
+                          {ep.os}/{ep.arch} · {ep.version}
+                        </span>
+                      )}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => updateEp(ep.name)}
+                      disabled={updBusy != null || !ep.connected}
+                      title={
+                        ep.connected
+                          ? 'Обновить до последней версии (OTA)'
+                          : 'Endpoint недоступен'
+                      }
+                      className="flex shrink-0 items-center gap-1.5 rounded-sm bg-primary/10 px-2.5 py-1.5 text-[11.5px] font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+                    >
+                      {updBusy === ep.name && <Loader2 size={12} className="animate-spin" />}
+                      Обновить
+                    </button>
                     <button
                       type="button"
                       onClick={() => regenToken(ep.name)}
@@ -276,7 +320,8 @@ export default function SettingsModal({ open, onClose, notify }) {
                   </div>
                 ))}
                 <p className="mt-1 text-[11px] text-text-muted">
-                  Только для авто-сгенерированных токенов; endpoint перезапустится.
+                  Обновление: бинарь из последнего релиза, endpoint перезапустится сам.
+                  Токен — только для авто-сгенерированных.
                 </p>
               </div>
             )}

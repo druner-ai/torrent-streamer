@@ -6,6 +6,7 @@ import base64
 import contextlib
 import hashlib
 import html
+import io
 import json
 import os
 import random
@@ -13,9 +14,11 @@ import re
 import socket
 import sqlite3
 import subprocess
+import tarfile
 import threading
 import time
 import urllib.parse
+import zipfile
 from pathlib import Path
 from typing import Annotated
 
@@ -2722,7 +2725,9 @@ def _ep_status(name: str) -> dict:
         d = r.json()
         result = {"current_device": d.get("current_device"),
                   "connected": d.get("connected", False),
-                  "playing": d.get("playing", False)}
+                  "playing": d.get("playing", False),
+                  "version": d.get("version"),
+                  "os": d.get("os"), "arch": d.get("arch")}
     except requests.RequestException:
         return {"available_devices": [], "current_device": None,
                 "connected": False, "playing": False, "error": "недоступен"}
@@ -2818,6 +2823,89 @@ def endpoints_regenerate_token(req: EndpointSelectReq):
 
     threading.Thread(target=_refresh, daemon=True).start()
     return {"ok": True, "restart": True}
+
+
+# ---------- P2.10 OTA-обновление эндпоинтов ----------
+_GITHUB_REPO = os.getenv("OAAT_REPO", "druner-ai/oaat")
+_UPDATE_TARGETS = {
+    ("macos", "aarch64"): ("aarch64-apple-darwin", "tar.gz"),
+    ("macos", "x86_64"): ("x86_64-apple-darwin", "tar.gz"),
+    ("linux", "x86_64"): ("x86_64-unknown-linux-gnu", "tar.gz"),
+    ("linux", "aarch64"): ("aarch64-unknown-linux-gnu", "tar.gz"),
+    ("windows", "x86_64"): ("x86_64-pc-windows-msvc", "zip"),
+}
+
+
+def _github_headers() -> dict:
+    tok = _get_setting("github_token") or os.getenv("GITHUB_TOKEN", "")
+    h = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    if tok:
+        h["Authorization"] = f"Bearer {tok}"
+    return h
+
+
+@app.get("/api/endpoints/update_check")
+def endpoints_update_check():
+    """Последний релиз oaat-форка (для кнопки «Обновить» в настройках)."""
+    try:
+        r = requests.get(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+            headers=_github_headers(), timeout=15)
+        r.raise_for_status()
+        d = r.json()
+        return {"ok": True, "latest": d.get("tag_name"),
+                "published": d.get("published_at")}
+    except (requests.RequestException, ValueError) as e:
+        raise HTTPException(502, f"GitHub недоступен: {e}") from e
+
+
+@app.post("/api/endpoints/update")
+def endpoints_update(req: EndpointSelectReq):
+    """P2.10 OTA: скачать tune-bridge под платформу endpoint'а из последнего
+    релиза и передать ему (POST /api/update, JSON+base64). Endpoint меняет
+    бинарь и выходит — супервизор (systemd/LaunchAgent) перезапускает новую версию."""
+    name = req.endpoint or _active_ep_name()
+    if name is None:
+        raise HTTPException(400, "нет доступного endpoint'а")
+    st = _ep_status(name)
+    osname, arch = st.get("os"), st.get("arch")
+    if not osname or not arch:
+        raise HTTPException(
+            409, "endpoint старой версии (в статусе нет os/arch) — обновите один раз вручную")
+    tgt = _UPDATE_TARGETS.get((osname, arch))
+    if not tgt:
+        raise HTTPException(400, f"нет сборки для платформы {osname}/{arch}")
+    triple, ext = tgt
+    asset = f"tune-bridge-{triple}.{ext}"
+    url = f"https://github.com/{_GITHUB_REPO}/releases/latest/download/{asset}"
+    try:
+        r = requests.get(url, headers=_github_headers(), timeout=300,
+                         allow_redirects=True)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        raise HTTPException(502, f"скачивание релиза не удалось: {e}") from e
+    bin_name = "tune-bridge.exe" if ext == "zip" else "tune-bridge"
+    bio = io.BytesIO(r.content)
+    try:
+        if ext == "zip":
+            with zipfile.ZipFile(bio) as z:
+                payload = z.read(bin_name)
+        else:
+            with tarfile.open(fileobj=bio, mode="r:gz") as tf:
+                f = tf.extractfile(bin_name)
+                if f is None:
+                    raise KeyError(bin_name)
+                payload = f.read()
+    except (tarfile.TarError, zipfile.BadZipFile, KeyError) as e:
+        raise HTTPException(502, f"в архиве нет {bin_name}: {e}") from e
+    try:
+        resp = requests.post(f"{_ep_web(name)}/api/update",
+                             json={"b64": base64.b64encode(payload).decode()},
+                             headers=_ep_headers(name), timeout=120)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        raise HTTPException(502, f"endpoint не принял обновление: {e}") from e
+    return {"ok": True, "endpoint": name, "asset": asset, "size": len(payload)}
 
 
 @app.post("/api/player/{cmd}")
