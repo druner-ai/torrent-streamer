@@ -1,6 +1,6 @@
 # torrent-streamer (SoundVault) — снимок состояния проекта
 
-> Последнее обновление: 2026-11-04. Полная процедурная память — в скилле
+> Последнее обновление: 2026-11-07. Полная процедурная память — в скилле
 > `torrent-streamer` (operations) и `oaat-integration` (dev). Этот файл — компактный
 > справочник текущего состояния для быстрой ориентации.
 
@@ -28,8 +28,12 @@
   Tailscale `100.75.171.5`. Аудиоустройства: AirPods Pro, Microsoft Teams Audio,
   EDIFIER D32 (внешний), «Динамики MacBook Air» (только при открытой крышке).
 - **VPS B** (Амстердам): Caddy reverse-proxy `music.tochenyi.ru` → NUC по Tailscale.
-- **OAAT** — bit-perfect транспорт (renesenses/oaat, наш форк `/home/nuc/oaat` и
-  `/Users/tochenyi/oaat`): controller (на NUC) → endpoint (MacBook/NUC).
+- **OAAT** — bit-perfect транспорт. Канон форка: **github.com/druner-ai/oaat**
+  (private, теги `v0.2.8-ts.N` → GitHub Release: macOS arm64/x86_64, Linux
+  amd64/arm64 tar.gz+`.deb`, Windows zip; установщики с автозапуском). Рабочие
+  копии: `/home/nuc/oaat` (сборка/верификация) и `/home/deploy/oaat` (git);
+  MacBook `/Users/tochenyi/oaat`. controller (ts-controller на NUC) → endpoint
+  (MacBook/NUC).
 
 ## Мульти-эндпоинт (реализовано 2026-11-04)
 - Env: `OAAT_ENDPOINTS="MacBook=100.75.171.5:9740,NUC=127.0.0.1:9740"`.
@@ -45,6 +49,27 @@
 - device_switch обработчик (main.rs) — live-reconfigure стрима при переключении.
 - `control_token` в `[web_ui]` endpoint.toml обязателен для POST с другого хоста:
   без него управляющие POST принимаются только с loopback (403).
+
+## Онбординг и «поставил и забыл» (2026-11-06/07)
+- **mDNS-автообнаружение**: новые endpoint'ы появляются в `/api/endpoints`
+  (`auto:true`) БЕЗ записи в `OAAT_ENDPOINTS`; кэш обзора TTL 30с (sticky при
+  морганиях); zero-config старт. В сети Андрея multicast режет Keenetic —
+  фактически Tailscale-fallback.
+- **Мастер первого запуска** (`SetupWizard.jsx` + `GET /api/setup/status`):
+  RuTracker-логин с проверкой → qBittorrent → экран endpoint'ов со ссылками на
+  скачивание (releases druner-ai/oaat). Пропуск — sessionStorage.
+- **Runtime-настройки без рестарта**: qbt_url/qbt_user/qbt_password,
+  frontend_auth (Basic Auth админки), rutracker_* — в таблице settings
+  (env = fallback); читаются на каждый запрос.
+- **Per-endpoint control_token**: endpoint ≥ ts.2 генерирует токен сам
+  (state-файл `<config>.token`) и публикует авто-токен в mDNS TXT; backend
+  приоритет: TXT > setting `ep_token:<name>` > env `OAAT_CONTROL_TOKEN`.
+  Регенерация: кнопка в настройках → endpoint exit → супервизор рестарт
+  (409 для config-токена).
+- **Публичный доступ**: compose-профиль `public` = tailscale-sidecar в netns
+  backend'а (TS_AUTHKEY в .env); не включать рядом с host-tailscaled.
+- **Автозапуск endpoint'а из установщика**: .deb postinst (systemd
+  enable+start), macOS install.sh+LaunchAgent, Windows install.ps1 (HKCU Run).
 
 ## Адреса / доступ
 - NUC: Tailscale `100.104.232.67`, LAN `192.168.31.204`.
