@@ -36,6 +36,15 @@ export const api = {
   toggleFavorite: (id) => post(`/api/albums/${id}/favorite`),
   history: () => request('/api/history'),
   historyRemove: (id) => request(`/api/history/${id}`, { method: 'DELETE' }),
+  playlists: () => request('/api/playlists'),
+  playlistCreate: (name) => post('/api/playlists', { name }),
+  playlistDelete: (id) => request(`/api/playlists/${id}`, { method: 'DELETE' }),
+  playlistGet: (id) => request(`/api/playlists/${id}`),
+  playlistAdd: (id, albumId, trackIndex = -1) =>
+    post(`/api/playlists/${id}/items`, { album_id: albumId, track_index: trackIndex }),
+  playlistItemRemove: (pid, itemId) =>
+    request(`/api/playlists/${pid}/items/${itemId}`, { method: 'DELETE' }),
+  playlistPlay: (id, start = 0) => post(`/api/playlists/${id}/play?start=${start}`),
   deleteAlbum: (id) => request(`/api/albums/${id}`, { method: 'DELETE' }),
 
   catalogSections: () => request('/api/catalog/sections'),

@@ -1,4 +1,4 @@
-import { Disc3, Heart, ListPlus, Play, Trash2, X } from 'lucide-react'
+import { Disc3, Heart, ListMusic, ListPlus, Play, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api.js'
 import { formatSize, formatTime, statusLabel } from '../utils.js'
@@ -20,6 +20,9 @@ export default function AlbumModal({
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
   const [coverFailed, setCoverFailed] = useState(false)
+  const [plOpen, setPlOpen] = useState(false)
+  const [plList, setPlList] = useState([])
+  const [plNew, setPlNew] = useState('')
 
   useEffect(() => {
     if (!open || albumId == null) return
@@ -82,6 +85,43 @@ export default function AlbumModal({
 
   const handleDelete = () => {
     if (window.confirm('Удалить альбом из библиотеки?')) onDelete(albumId)
+  }
+
+  async function openPlaylists() {
+    const opening = !plOpen
+    setPlOpen(opening)
+    if (opening) {
+      try {
+        const d = await api.playlists()
+        setPlList(d.playlists || [])
+      } catch {
+        // список останется пустым — можно создать новый
+      }
+    }
+  }
+
+  async function addToPlaylist(pl) {
+    try {
+      await api.playlistAdd(pl.id, Number(albumId), -1)
+      notify(`Добавлено в «${pl.name}»`, 'success')
+      setPlOpen(false)
+    } catch (e) {
+      notify(e.message, 'error')
+    }
+  }
+
+  async function createAndAdd() {
+    const name = plNew.trim()
+    if (!name) return
+    try {
+      const d = await api.playlistCreate(name)
+      await api.playlistAdd(d.id, Number(albumId), -1)
+      notify(`Создан «${name}», альбом добавлен`, 'success')
+      setPlNew('')
+      setPlOpen(false)
+    } catch (e) {
+      notify(e.message, 'error')
+    }
   }
 
   return (
@@ -161,6 +201,54 @@ export default function AlbumModal({
                 <ListPlus size={16} />
                 В очередь
               </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={openPlaylists}
+                  aria-label="Добавить в плейлист"
+                  title="В плейлист"
+                  className={`flex h-10 w-10 items-center justify-center rounded-sm border border-border-strong transition-colors hover:bg-surface-2 ${
+                    plOpen ? 'text-primary' : 'text-text-secondary'
+                  }`}
+                >
+                  <ListMusic size={18} />
+                </button>
+                {plOpen && (
+                  <div className="absolute left-0 top-11 z-20 w-56 rounded-md border border-border bg-surface-3 p-2 shadow-4">
+                    {plList.map((pl) => (
+                      <button
+                        key={pl.id}
+                        type="button"
+                        onClick={() => addToPlaylist(pl)}
+                        className="block w-full truncate rounded-sm px-2 py-1.5 text-left text-[13px] text-text-primary transition-colors hover:bg-surface-2"
+                      >
+                        {pl.name} <span className="text-text-muted">({pl.count})</span>
+                      </button>
+                    ))}
+                    {plList.length === 0 && (
+                      <p className="px-2 py-1 text-[12px] text-text-muted">
+                        Плейлистов пока нет
+                      </p>
+                    )}
+                    <div className="mt-1 flex gap-1 border-t border-border-subtle pt-1.5">
+                      <input
+                        value={plNew}
+                        onChange={(e) => setPlNew(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && createAndAdd()}
+                        placeholder="Новый плейлист…"
+                        className="min-w-0 flex-1 rounded-sm bg-surface-inset px-2 py-1 text-[12.5px] text-text-primary placeholder:text-text-muted focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={createAndAdd}
+                        className="rounded-sm bg-primary px-2 text-[12px] font-medium text-on-primary transition-colors hover:bg-primary-hover"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => onToggleFavorite(albumId)}

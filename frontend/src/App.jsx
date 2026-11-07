@@ -457,6 +457,15 @@ export default function App() {
               onQueryChange={setLibraryQuery}
               {...pageProps}
               history={history}
+              notify={pushToast}
+              onPlayPlaylist={async (pid, start) => {
+                try {
+                  await api.playlistPlay(pid, start)
+                  loadPlayer()
+                } catch (e) {
+                  pushToast(e.message, 'error')
+                }
+              }}
               onResume={async (aid, idx, pos) => {
                 try {
                   await api.playAlbumAt(aid, idx, pos)

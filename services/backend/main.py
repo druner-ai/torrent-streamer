@@ -458,6 +458,11 @@ def _schema(c):
         album_id INTEGER PRIMARY KEY, added_at INTEGER)""")
     c.execute("""CREATE TABLE IF NOT EXISTS history(
         album_id INTEGER PRIMARY KEY, track_index INTEGER, position REAL, ts INTEGER)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS playlists(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, created_at INTEGER)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS playlist_items(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, playlist_id INTEGER,
+        album_id INTEGER, track_index INTEGER)""")
     c.execute("""CREATE TABLE IF NOT EXISTS catalog(
         t INTEGER PRIMARY KEY, forum_id INTEGER, title TEXT, size TEXT,
         seeders INTEGER, leechers INTEGER, crawled_at INTEGER)""")
@@ -2466,6 +2471,122 @@ def history_remove(aid: int):
         c.execute("DELETE FROM history WHERE album_id=?", (aid,))
         c.commit()
     return {"ok": True}
+
+
+# ---------- плейлисты (P2.11): ручные, трек = album_id + track_index ----------
+class PlaylistReq(BaseModel):
+    name: str
+
+
+class PlaylistItemReq(BaseModel):
+    album_id: int
+    track_index: int = -1  # -1 → весь альбом
+
+
+@app.get("/api/playlists")
+def playlists_list():
+    with db() as c:
+        rows = c.execute(
+            "SELECT p.id, p.name, p.created_at, COUNT(i.id) AS count"
+            " FROM playlists p LEFT JOIN playlist_items i ON i.playlist_id=p.id"
+            " GROUP BY p.id ORDER BY p.created_at").fetchall()
+    return {"playlists": [dict(r) for r in rows]}
+
+
+@app.post("/api/playlists")
+def playlists_create(req: PlaylistReq):
+    name = (req.name or "").strip()
+    if not name:
+        raise HTTPException(400, "пустое название")
+    with db() as c:
+        cur = c.execute("INSERT INTO playlists(name, created_at) VALUES(?,?)",
+                        (name, int(time.time())))
+        c.commit()
+        pid = cur.lastrowid
+    return {"ok": True, "id": pid, "name": name}
+
+
+@app.delete("/api/playlists/{pid}")
+def playlists_delete(pid: int):
+    with db() as c:
+        c.execute("DELETE FROM playlists WHERE id=?", (pid,))
+        c.execute("DELETE FROM playlist_items WHERE playlist_id=?", (pid,))
+        c.commit()
+    return {"ok": True}
+
+
+@app.get("/api/playlists/{pid}")
+def playlist_get(pid: int):
+    with db() as c:
+        p = c.execute("SELECT * FROM playlists WHERE id=?", (pid,)).fetchone()
+        if not p:
+            raise HTTPException(404, "плейлист не найден")
+        rows = c.execute(
+            "SELECT i.id, i.album_id, i.track_index, a.name AS album, a.artist"
+            " FROM playlist_items i JOIN albums a ON a.id=i.album_id"
+            " WHERE i.playlist_id=? ORDER BY i.id", (pid,)).fetchall()
+        items = [dict(r) for r in rows]
+        # имена треков по альбому (ORDER BY path — как в _current_tracks);
+        # correlated OFFSET в SQLite не видит внешние колонки, поэтому в Python
+        names: dict[int, list] = {}
+        for aid in {i["album_id"] for i in items}:
+            names[aid] = [t["name"] for t in c.execute(
+                "SELECT name FROM tracks WHERE album_id=? ORDER BY path", (aid,))]
+        for i in items:
+            tl = names.get(i["album_id"], [])
+            idx = i["track_index"] or 0
+            i["track"] = tl[idx] if 0 <= idx < len(tl) else None
+    return {"id": pid, "name": p["name"], "items": items}
+
+
+@app.post("/api/playlists/{pid}/items")
+def playlist_add(pid: int, req: PlaylistItemReq):
+    with db() as c:
+        if not c.execute("SELECT 1 FROM playlists WHERE id=?", (pid,)).fetchone():
+            raise HTTPException(404, "плейлист не найден")
+        if req.track_index >= 0:
+            idxs = [req.track_index]
+        else:
+            n = c.execute("SELECT COUNT(*) AS n FROM tracks WHERE album_id=?",
+                          (req.album_id,)).fetchone()["n"]
+            if not n:
+                raise HTTPException(400, "в альбоме нет треков")
+            idxs = list(range(n))
+        for i in idxs:
+            c.execute("INSERT INTO playlist_items(playlist_id, album_id, track_index)"
+                      " VALUES(?,?,?)", (pid, req.album_id, i))
+        c.commit()
+    return {"ok": True, "added": len(idxs)}
+
+
+@app.delete("/api/playlists/{pid}/items/{item_id}")
+def playlist_item_remove(pid: int, item_id: int):
+    with db() as c:
+        c.execute("DELETE FROM playlist_items WHERE id=? AND playlist_id=?",
+                  (item_id, pid))
+        c.commit()
+    return {"ok": True}
+
+
+@app.post("/api/playlists/{pid}/play")
+def playlist_play(pid: int, start: int = 0):
+    """Очередь = треки плейлиста; автопереход/repeat/shuffle работают как обычно."""
+    global _QUEUE, _QUEUE_POS
+    with db() as c:
+        rows = c.execute(
+            "SELECT album_id, track_index FROM playlist_items WHERE playlist_id=?"
+            " ORDER BY id", (pid,)).fetchall()
+    if not rows:
+        raise HTTPException(400, "плейлист пуст")
+    _QUEUE = [{"aid": r["album_id"], "idx": r["track_index"]} for r in rows]
+    if _SHUFFLE and len(_QUEUE) > 1:
+        _apply_shuffle()
+        _QUEUE_POS = 0
+    else:
+        _QUEUE_POS = max(0, min(start, len(_QUEUE) - 1))
+    _persist_player_state()
+    entry = _QUEUE[_QUEUE_POS]
+    return _start_track(entry["aid"], entry["idx"])
 
 
 @app.post("/api/albums/{aid}/tracks/{idx}/play")

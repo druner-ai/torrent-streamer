@@ -1485,3 +1485,37 @@ def test_play_with_track_index_and_position():
         assert r.status_code == 200
         bq.assert_called_once_with(5, 2)
         st.assert_called_once_with(5, 2, offset=30.0)
+
+
+def test_playlists_crud_and_play(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "pl.db")):
+        with main.db() as c:
+            c.execute("INSERT INTO albums(id,hash,name,status,artist) VALUES(1,'h','Album X','complete','Artist')")
+            c.execute("INSERT INTO tracks(album_id,path,name) VALUES(1,'/a/01.flac','T1'),(1,'/a/02.flac','T2')")
+            c.commit()
+        assert client.post("/api/playlists", json={"name": "   "}).status_code == 400
+        pid = client.post("/api/playlists", json={"name": "Jazz"}).json()["id"]
+        assert client.get("/api/playlists").json()["playlists"][0]["count"] == 0
+        # весь альбом (-1) + один трек
+        assert client.post(f"/api/playlists/{pid}/items",
+                           json={"album_id": 1, "track_index": -1}).json()["added"] == 2
+        assert client.post(f"/api/playlists/{pid}/items",
+                           json={"album_id": 1, "track_index": 0}).json()["added"] == 1
+        d = client.get(f"/api/playlists/{pid}").json()
+        assert [i["track"] for i in d["items"]] == ["T1", "T2", "T1"]
+        assert d["items"][0]["album"] == "Album X" and d["items"][0]["artist"] == "Artist"
+        assert client.get("/api/playlists").json()["playlists"][0]["count"] == 3
+        item_id = d["items"][2]["id"]
+        assert client.delete(f"/api/playlists/{pid}/items/{item_id}").json()["ok"]
+        assert len(client.get(f"/api/playlists/{pid}").json()["items"]) == 2
+        # play: очередь = треки плейлиста, start respected
+        with patch.object(main, "_start_track", return_value={"ok": True}) as st, \
+             patch.object(main, "_persist_player_state"):
+            r = client.post(f"/api/playlists/{pid}/play?start=1")
+            assert r.status_code == 200
+            st.assert_called_once_with(1, 1)
+            assert main._QUEUE == [{"aid": 1, "idx": 0}, {"aid": 1, "idx": 1}]
+            assert main._QUEUE_POS == 1
+        assert client.delete(f"/api/playlists/{pid}").json()["ok"]
+        assert client.get("/api/playlists").json()["playlists"] == []
+        assert client.get(f"/api/playlists/{pid}").status_code == 404

@@ -1,5 +1,7 @@
-import { Play, Search, X } from 'lucide-react'
+import { ListMusic, Play, Plus, Search, Trash2, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import AlbumGrid from '../components/AlbumGrid.jsx'
+import PlaylistModal from '../components/PlaylistModal.jsx'
 import { api } from '../api.js'
 
 function fmtTime(s) {
@@ -19,7 +21,48 @@ export default function Library({
   history = [],
   onResume,
   onHistoryRemove,
+  notify,
+  onPlayPlaylist,
 }) {
+  const [playlists, setPlaylists] = useState([])
+  const [newPl, setNewPl] = useState('')
+  const [openPlId, setOpenPlId] = useState(null)
+
+  async function loadPlaylists() {
+    try {
+      const d = await api.playlists()
+      setPlaylists(d.playlists || [])
+    } catch {
+      // молча — секция просто останется пустой
+    }
+  }
+
+  useEffect(() => {
+    loadPlaylists()
+  }, [])
+
+  async function createPlaylist() {
+    const name = newPl.trim()
+    if (!name) return
+    try {
+      await api.playlistCreate(name)
+      setNewPl('')
+      loadPlaylists()
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+  }
+
+  async function deletePlaylist(pl) {
+    if (!window.confirm(`Удалить плейлист «${pl.name}»?`)) return
+    try {
+      await api.playlistDelete(pl.id)
+      loadPlaylists()
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+  }
+
   const q = query.trim().toLowerCase()
   const filtered = q
     ? albums.filter(
@@ -96,6 +139,68 @@ export default function Library({
         </div>
       )}
 
+      {!q && (
+        <div className="mb-8">
+          <h2 className="mb-3 text-[13px] font-semibold uppercase tracking-wide text-text-muted">
+            Плейлисты
+          </h2>
+          <div className="space-y-1.5">
+            {playlists.map((pl) => (
+              <div
+                key={pl.id}
+                className="group flex items-center gap-3 rounded-md border border-border-subtle bg-surface-1 px-3 py-2"
+              >
+                <ListMusic size={17} className="shrink-0 text-primary" />
+                <button
+                  type="button"
+                  onClick={() => setOpenPlId(pl.id)}
+                  className="min-w-0 flex-1 truncate text-left text-[13.5px] font-medium text-text-primary hover:underline"
+                >
+                  {pl.name}{' '}
+                  <span className="font-mono text-[11.5px] font-normal text-text-muted">
+                    {pl.count} трек.
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onPlayPlaylist(pl.id, 0)}
+                  disabled={!pl.count}
+                  aria-label="Играть плейлист"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors hover:bg-surface-2 hover:text-primary disabled:opacity-40"
+                >
+                  <Play size={14} className="fill-current" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deletePlaylist(pl)}
+                  aria-label="Удалить плейлист"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-muted opacity-0 transition-all hover:bg-danger/10 hover:text-danger group-hover:opacity-100"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                value={newPl}
+                onChange={(e) => setNewPl(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && createPlaylist()}
+                placeholder="Новый плейлист…"
+                className="h-9 w-full max-w-[260px] rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={createPlaylist}
+                aria-label="Создать плейлист"
+                className="flex h-9 w-9 items-center justify-center rounded-sm bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2 hover:text-primary"
+              >
+                <Plus size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <AlbumGrid
         albums={filtered}
         loading={loading}
@@ -103,6 +208,16 @@ export default function Library({
         onPlay={onPlay}
         onToggleFavorite={onToggleFavorite}
         isPlayingAlbum={isPlayingAlbum}
+      />
+
+      <PlaylistModal
+        playlistId={openPlId}
+        onClose={() => {
+          setOpenPlId(null)
+          loadPlaylists()
+        }}
+        notify={notify || (() => {})}
+        onPlayPlaylist={onPlayPlaylist}
       />
     </div>
   )
