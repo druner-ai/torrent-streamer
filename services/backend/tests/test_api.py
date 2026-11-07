@@ -1144,3 +1144,13 @@ def test_crawl_forum_retries_flaky_page():
         out = main.crawl_forum(7, pages=2)
     assert len(out) == 2
     assert len(calls) == 3  # start=50 запрошен дважды (retry)
+
+
+def test_flaresolverr_get_uses_session():
+    with patch.object(main.requests, "post") as post:
+        post.return_value = Mock(status_code=200, raise_for_status=Mock(),
+                                 json=Mock(return_value={"solution": {"response": "<html>"}}))
+        assert main._flaresolverr_get("https://rutracker.org/forum/viewforum.php?f=1") == "<html>"
+    payload = post.call_args.kwargs["json"]
+    assert payload["session"] == "soundvault"
+    assert payload["session_ttl"] == 1800

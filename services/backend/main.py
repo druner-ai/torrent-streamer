@@ -819,12 +819,16 @@ class CatalogDownloadReq(BaseModel):
 
 def _flaresolverr_get(url: str) -> str:
     """страница через FlareSolverr; один retry с удлинённым таймаутом — решение
-    CF-challenge иногда не укладывается в 30с (контейнер ограничен 1 CPU)."""
+    CF-challenge иногда не укладывается в 30с (контейнер ограничен 1 CPU).
+
+    session: cf_clearance переиспользуется между запросами — challenge решается
+    один раз на TTL, а не на каждой странице (иначе ~2.5 мин/страницу)."""
     last = None
     for attempt, (mt, to) in enumerate(((30000, 45), (55000, 75))):
         try:
             r = requests.post(f"{FLARESOLVERR_URL}/v1",
-                              json={"cmd": "request.get", "url": url, "maxTimeout": mt},
+                              json={"cmd": "request.get", "url": url, "maxTimeout": mt,
+                                    "session": "soundvault", "session_ttl": 1800},
                               timeout=to)
             r.raise_for_status()
             return r.json().get("solution", {}).get("response", "") or ""
