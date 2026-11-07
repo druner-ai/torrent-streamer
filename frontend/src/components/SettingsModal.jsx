@@ -21,6 +21,7 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [rtBusy, setRtBusy] = useState(false)
   const [updLatest, setUpdLatest] = useState(null)
   const [updBusy, setUpdBusy] = useState(null)
+  const [actBusy, setActBusy] = useState(null)
 
   useEffect(() => {
     if (!open) return
@@ -65,6 +66,20 @@ export default function SettingsModal({ open, onClose, notify }) {
       notify(e.message, 'error')
     } finally {
       setRegenBusy(null)
+    }
+  }
+
+  async function activateEp(name) {
+    setActBusy(name)
+    try {
+      await api.selectEndpoint(name, undefined)
+      const d = await api.endpoints()
+      setEndpointList(d.endpoints || [])
+      notify(`Звук переключён на «${name}»`, 'success')
+    } catch (e) {
+      notify(e.message, 'error')
+    } finally {
+      setActBusy(null)
     }
   }
 
@@ -283,17 +298,32 @@ export default function SettingsModal({ open, onClose, notify }) {
                 </h3>
                 {endpointList.map((ep) => (
                   <div key={ep.name} className="mb-2 flex items-center gap-2">
-                    <span className="min-w-0 flex-1 text-[13px] text-text-secondary">
-                      <span className="block truncate">
-                        {ep.name}
-                        {ep.auto ? ' (mDNS)' : ''}
-                      </span>
-                      {ep.version && (
-                        <span className="block font-mono text-[10.5px] text-text-muted">
-                          {ep.os}/{ep.arch} · {ep.version}
+                    <button
+                      type="button"
+                      onClick={() => !ep.active && activateEp(ep.name)}
+                      disabled={actBusy != null}
+                      title={ep.active ? 'Активный endpoint' : 'Сделать активным — звук пойдёт на него'}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-60"
+                    >
+                      <span
+                        className={`h-2 w-2 shrink-0 rounded-full ${
+                          ep.connected ? 'bg-primary' : 'bg-text-muted/40'
+                        }`}
+                      />
+                      <span className="min-w-0 flex-1 text-[13px] text-text-secondary">
+                        <span className="block truncate">
+                          {ep.name}
+                          {ep.auto ? ' (mDNS)' : ''}
+                          {ep.active ? ' · активен' : ''}
                         </span>
-                      )}
-                    </span>
+                        {ep.version && (
+                          <span className="block font-mono text-[10.5px] text-text-muted">
+                            {ep.os}/{ep.arch} · {ep.version}
+                          </span>
+                        )}
+                      </span>
+                      {actBusy === ep.name && <Loader2 size={12} className="shrink-0 animate-spin" />}
+                    </button>
                     <button
                       type="button"
                       onClick={() => updateEp(ep.name)}
@@ -320,6 +350,7 @@ export default function SettingsModal({ open, onClose, notify }) {
                   </div>
                 ))}
                 <p className="mt-1 text-[11px] text-text-muted">
+                  Тап по названию — сделать endpoint активным (звук пойдёт на него).
                   Обновление: бинарь из последнего релиза, endpoint перезапустится сам.
                   Токен — только для авто-сгенерированных.
                 </p>
