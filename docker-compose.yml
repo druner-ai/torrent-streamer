@@ -53,3 +53,35 @@ services:
       - ./data:/data
       - /home/nuc/oaat/target/release/ts-controller:/usr/local/bin/ts-controller:ro
       - /home/nuc/torrent-streamer/data/qbt/qBittorrent/downloads:/home/nuc/torrent-streamer/data/qbt/qBittorrent/downloads:ro
+
+  # P1.6: публичный доступ одним флагом — Tailscale-sidecar (профиль "public").
+  # Включить: TS_AUTHKEY=*** в .env и `docker compose --profile public up -d`.
+  # Контейнер делит network namespace с backend (здесь = host), и SoundVault
+  # становится доступен из вашего tailnet по http://<tailscale-ip>:8000
+  # (без проброса портов и reverse-proxy). Auth-ключ:
+  #   https://login.tailscale.com/admin/settings/keys (reusable, ephemeral ok).
+  # ВНИМАНИЕ: не включайте, если на хосте уже работает tailscaled — два
+  #   демона в одном netns конфликтуют (используйте существующий).
+  tailscale:
+    image: tailscale/tailscale:latest
+    profiles: ["public"]
+    container_name: torrent-streamer-tailscale
+    network_mode: service:backend
+    hostname: ${TS_HOSTNAME:-soundvault}
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
+    volumes:
+      - ts-state:/var/lib/tailscale
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+volumes:
+  ts-state:
