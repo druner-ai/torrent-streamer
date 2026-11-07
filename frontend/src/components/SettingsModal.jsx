@@ -17,6 +17,8 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [adminAuthSet, setAdminAuthSet] = useState(false)
   const [endpointList, setEndpointList] = useState([])
   const [regenBusy, setRegenBusy] = useState(null)
+  const [rtStatus, setRtStatus] = useState(null)
+  const [rtBusy, setRtBusy] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -38,6 +40,10 @@ export default function SettingsModal({ open, onClose, notify }) {
     api
       .endpoints()
       .then((d) => alive && setEndpointList(d.endpoints || []))
+      .catch(() => {})
+    api
+      .rutrackerStatus()
+      .then((d) => alive && setRtStatus(d))
       .catch(() => {})
     return () => {
       alive = false
@@ -90,6 +96,19 @@ export default function SettingsModal({ open, onClose, notify }) {
       notify(e.message, 'error')
     } finally {
       setTesting(false)
+    }
+  }
+
+  async function resetSession() {
+    setRtBusy(true)
+    try {
+      const d = await api.rutrackerResetSession()
+      setRtStatus((s) => (s ? { ...s, session: d.session } : s))
+      notify('CF-сессия сброшена — следующий запрос решит challenge заново', 'success')
+    } catch (e) {
+      notify(e.message, 'error')
+    } finally {
+      setRtBusy(false)
     }
   }
 
@@ -151,6 +170,36 @@ export default function SettingsModal({ open, onClose, notify }) {
                 {testing && <Loader2 size={13} className="animate-spin" />}
                 Проверить логин
               </button>
+              {rtStatus && (
+                <div className="mt-4 rounded-sm border border-border bg-surface-1 p-3 text-[12px] text-text-secondary">
+                  <div className="mb-1 flex items-center gap-2">
+                    <span className={rtStatus.flaresolverr.up ? 'text-success' : 'text-danger'}>
+                      ●
+                    </span>
+                    FlareSolverr:{' '}
+                    {rtStatus.flaresolverr.up
+                      ? `работает${rtStatus.flaresolverr.version ? ` v${rtStatus.flaresolverr.version}` : ''}`
+                      : 'недоступен'}
+                  </div>
+                  <div className="mb-1">
+                    CF-сессия: <span className="font-mono">{rtStatus.session}</span>
+                  </div>
+                  <div className="mb-1">
+                    {rtStatus.refresh && rtStatus.refresh.running
+                      ? `Краулинг: ${rtStatus.refresh.done}/${rtStatus.refresh.total} разделов, строк ${rtStatus.refresh.crawled}`
+                      : 'Краулинг: не запущен'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetSession}
+                    disabled={rtBusy}
+                    className="mt-1 flex items-center gap-2 rounded-sm bg-surface-2 px-3 py-1.5 text-[12px] text-text-secondary transition-colors hover:bg-surface-3 disabled:opacity-60"
+                  >
+                    {rtBusy && <Loader2 size={13} className="animate-spin" />}
+                    Сбросить CF-сессию
+                  </button>
+                </div>
+              )}
             </div>
 
             <div>

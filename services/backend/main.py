@@ -850,6 +850,11 @@ class CatalogDownloadReq(BaseModel):
     t: int
 
 
+def _rt_session() -> str:
+    """имя FlareSolverr-сессии (cf_clearance привязана к ней); ротация = сброс обхода CF."""
+    return _get_setting("rt_session") or "soundvault"
+
+
 def _flaresolverr_get(url: str) -> str:
     """страница через FlareSolverr; один retry с удлинённым таймаутом — решение
     CF-challenge иногда не укладывается в 30с (контейнер ограничен 1 CPU).
@@ -861,7 +866,7 @@ def _flaresolverr_get(url: str) -> str:
         try:
             r = requests.post(f"{FLARESOLVERR_URL}/v1",
                               json={"cmd": "request.get", "url": url, "maxTimeout": mt,
-                                    "session": "soundvault", "session_ttl": 1800},
+                                    "session": _rt_session(), "session_ttl": 1800},
                               timeout=to)
             r.raise_for_status()
             return r.json().get("solution", {}).get("response", "") or ""
@@ -1280,6 +1285,35 @@ def catalog_refresh(req: CatalogRefreshReq):
 @app.get("/api/catalog/refresh/status")
 def catalog_refresh_status():
     return _REFRESH_STATE
+
+
+@app.get("/api/rutracker/status")
+def rutracker_status():
+    """P2.12: здоровье обхода RuTracker — FlareSolverr, CF-сессия, краулинг."""
+    fs: dict = {"up": False}
+    try:
+        r = requests.get(f"{FLARESOLVERR_URL}/v1", timeout=5)
+        r.raise_for_status()
+        d = r.json()
+        fs = {"up": True, "version": d.get("version")}
+    except (requests.RequestException, ValueError):
+        pass
+    return {
+        "flaresolverr": fs,
+        "session": _rt_session(),
+        "login_set": bool(_rutracker_login()),
+        "password_set": bool(_rutracker_password()),
+        "refresh": dict(_REFRESH_STATE),
+    }
+
+
+@app.post("/api/rutracker/reset_session")
+def rutracker_reset_session():
+    """Ротация FlareSolverr-сессии: следующий запрос пойдёт с чистым профилем
+    браузера и решит CF-challenge заново (лечит залипшую cf_clearance)."""
+    name = f"soundvault-{int(time.time())}"
+    _set_setting("rt_session", name)
+    return {"ok": True, "session": name}
 
 
 @app.post("/api/catalog/purge")

@@ -1445,3 +1445,19 @@ def test_device_watch_stop_clears_lost():
     main._DEVICE_LOST_NAME = "USB DAC"
     main._device_watch("stop")
     assert main._DEVICE_LOST_NAME is None
+
+
+def test_rutracker_status_and_reset_session(tmp_path):
+    """P2.12: статус обхода + ротация CF-сессии."""
+    with patch.object(main, "DB_PATH", str(tmp_path / "s.db")), \
+         patch.object(main, "FLARESOLVERR_URL", "http://127.0.0.1:1"), \
+         patch.object(main, "RUTRACKER_LOGIN", "u"), \
+         patch.object(main, "RUTRACKER_PASSWORD", "p"):
+        d = client.get("/api/rutracker/status").json()
+        assert d["flaresolverr"]["up"] is False  # недоступный адрес
+        assert d["session"] == "soundvault"
+        assert d["login_set"] and d["password_set"]
+        assert "refresh" in d
+        r = client.post("/api/rutracker/reset_session").json()
+        assert r["ok"] and r["session"].startswith("soundvault-")
+        assert client.get("/api/rutracker/status").json()["session"] == r["session"]

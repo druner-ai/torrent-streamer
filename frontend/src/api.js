@@ -76,6 +76,8 @@ export const api = {
   settings: () => request('/api/settings'),
   saveSettings: (data) => post('/api/settings', data),
   settingsTest: () => post('/api/settings/test'),
+  rutrackerStatus: () => request('/api/rutracker/status'),
+  rutrackerResetSession: () => post('/api/rutracker/reset_session'),
   setupStatus: () => request('/api/setup/status'),
 
   queue: () => request('/api/queue'),
