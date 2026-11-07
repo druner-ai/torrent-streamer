@@ -49,6 +49,7 @@ export default function App() {
   const [view, setView] = useState('library')
   const [albums, setAlbums] = useState([])
   const [albumsLoading, setAlbumsLoading] = useState(true)
+  const [history, setHistory] = useState([])
   const [player, setPlayer] = useState({ state: 'stop', volume: 100, album_id: null })
   const [queue, setQueue] = useState({ queue: [], pos: -1 })
   const [queueLoading, setQueueLoading] = useState(true)
@@ -114,9 +115,19 @@ export default function App() {
     }
   }, [])
 
+  const loadHistory = useCallback(async () => {
+    try {
+      const d = await api.history()
+      setHistory(d.history || [])
+    } catch {
+      // background poll
+    }
+  }, [])
+
   usePolling(loadAlbums, 5000)
   usePolling(loadPlayer, 2000)
   usePolling(loadQueue, 5000)
+  usePolling(loadHistory, 10000)
 
   const handlePlayAlbum = useCallback(
     async (album) => {
@@ -441,7 +452,28 @@ export default function App() {
           } md:pb-0`}
         >
           {view === 'library' && (
-            <Library query={libraryQuery} onQueryChange={setLibraryQuery} {...pageProps} />
+            <Library
+              query={libraryQuery}
+              onQueryChange={setLibraryQuery}
+              {...pageProps}
+              history={history}
+              onResume={async (aid, idx, pos) => {
+                try {
+                  await api.playAlbumAt(aid, idx, pos)
+                  loadPlayer()
+                } catch (e) {
+                  pushToast(e.message, 'error')
+                }
+              }}
+              onHistoryRemove={async (aid) => {
+                try {
+                  await api.historyRemove(aid)
+                  loadHistory()
+                } catch (e) {
+                  pushToast(e.message, 'error')
+                }
+              }}
+            />
           )}
           {view === 'artists' && <Artists {...pageProps} />}
           {view === 'tracker' && (

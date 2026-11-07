@@ -1461,3 +1461,27 @@ def test_rutracker_status_and_reset_session(tmp_path):
         r = client.post("/api/rutracker/reset_session").json()
         assert r["ok"] and r["session"].startswith("soundvault-")
         assert client.get("/api/rutracker/status").json()["session"] == r["session"]
+
+
+def test_history_upsert_list_remove(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "h.db")):
+        with main.db() as c:
+            c.execute("INSERT INTO albums(id, hash, name, status, artist) VALUES(1,'h','Album X','complete','Artist Y')")
+            c.commit()
+        main._hist_upsert(1, 2, 123.5)
+        main._hist_upsert(1, 3, 10.0)  # upsert — одна строка на альбом
+        d = client.get("/api/history").json()["history"]
+        assert len(d) == 1
+        assert d[0]["track_index"] == 3 and d[0]["position"] == 10.0
+        assert d[0]["name"] == "Album X" and d[0]["artist"] == "Artist Y"
+        assert client.delete("/api/history/1").json()["ok"]
+        assert client.get("/api/history").json()["history"] == []
+
+
+def test_play_with_track_index_and_position():
+    with patch.object(main, "_build_queue") as bq, \
+         patch.object(main, "_start_track", return_value={"ok": True}) as st:
+        r = client.post("/api/albums/5/play?track_index=2&position=30")
+        assert r.status_code == 200
+        bq.assert_called_once_with(5, 2)
+        st.assert_called_once_with(5, 2, offset=30.0)

@@ -456,6 +456,8 @@ def _schema(c):
             c.execute(f"ALTER TABLE tracks ADD COLUMN {col}")
     c.execute("""CREATE TABLE IF NOT EXISTS favorites(
         album_id INTEGER PRIMARY KEY, added_at INTEGER)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS history(
+        album_id INTEGER PRIMARY KEY, track_index INTEGER, position REAL, ts INTEGER)""")
     c.execute("""CREATE TABLE IF NOT EXISTS catalog(
         t INTEGER PRIMARY KEY, forum_id INTEGER, title TEXT, size TEXT,
         seeders INTEGER, leechers INTEGER, crawled_at INTEGER)""")
@@ -2335,6 +2337,7 @@ def _auto_advance():
     if _REPEAT == "one":
         entry = _QUEUE[_QUEUE_POS]
         _start_track(entry["aid"], entry["idx"])
+        _hist_upsert(entry["aid"], entry["idx"], 0)
         return
     npos = _QUEUE_POS + 1
     if npos >= len(_QUEUE):
@@ -2346,7 +2349,21 @@ def _auto_advance():
     entry = _QUEUE[npos]
     _start_track(entry["aid"], entry["idx"])
     _QUEUE_POS = npos
+    _hist_upsert(entry["aid"], entry["idx"], 0)
     _persist_player_state()
+
+
+def _hist_upsert(aid, idx, pos):
+    """точка возобновления альбома (история прослушивания / «продолжить»)."""
+    try:
+        with db() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO history(album_id, track_index, position, ts)"
+                " VALUES(?,?,?,?)",
+                (int(aid), int(idx), float(pos or 0), int(time.time())))
+            c.commit()
+    except Exception as e:  # noqa: BLE001 — история не должна ронять монитор
+        print(f"[history] upsert сбой: {e}", flush=True)
 
 
 def _device_watch(state: str):
@@ -2406,6 +2423,9 @@ def _player_monitor():
                 _device_watch(state)
             except Exception as e:  # noqa: BLE001 — сбой watch не роняет монитор
                 print(f"[player] device_watch сбой: {e}", flush=True)
+        if (tick % 10 == 0 and state == "playing" and _OAAT_ALBUM_ID is not None
+                and isinstance(resp, dict) and resp.get("elapsed") is not None):
+            _hist_upsert(_OAAT_ALBUM_ID, _OAAT_TRACK_INDEX or 0, resp["elapsed"])
         if was_playing and state == "stop" and _QUEUE and 0 <= _QUEUE_POS < len(_QUEUE):
             try:
                 _auto_advance()
@@ -2424,9 +2444,28 @@ def _player_monitor():
 
 
 @app.post("/api/albums/{aid}/play")
-def play(aid: int):
-    _build_queue(aid, 0)
-    return _start_track(aid, 0)
+def play(aid: int, track_index: int = 0, position: float = 0):
+    _build_queue(aid, track_index)
+    return _start_track(aid, track_index, offset=max(position, 0.0))
+
+
+@app.get("/api/history")
+def history_list():
+    """«Продолжить слушать»: последние альбомы с точкой возобновления."""
+    with db() as c:
+        rows = c.execute(
+            "SELECT h.album_id, h.track_index, h.position, h.ts, a.name, a.artist"
+            " FROM history h JOIN albums a ON a.id = h.album_id"
+            " ORDER BY h.ts DESC LIMIT 30").fetchall()
+    return {"history": [dict(r) for r in rows]}
+
+
+@app.delete("/api/history/{aid}")
+def history_remove(aid: int):
+    with db() as c:
+        c.execute("DELETE FROM history WHERE album_id=?", (aid,))
+        c.commit()
+    return {"ok": True}
 
 
 @app.post("/api/albums/{aid}/tracks/{idx}/play")

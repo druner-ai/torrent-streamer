@@ -30,8 +30,12 @@ export const api = {
   albumFiles: (id) => request(`/api/albums/${id}/files`),
   coverUrl: (id) => `/api/albums/${id}/cover`,
   playAlbum: (id) => post(`/api/albums/${id}/play`),
+  playAlbumAt: (id, trackIndex = 0, position = 0) =>
+    post(`/api/albums/${id}/play?track_index=${trackIndex}&position=${Math.round(position)}`),
   playTrack: (id, index) => post(`/api/albums/${id}/tracks/${index}/play`),
   toggleFavorite: (id) => post(`/api/albums/${id}/favorite`),
+  history: () => request('/api/history'),
+  historyRemove: (id) => request(`/api/history/${id}`, { method: 'DELETE' }),
   deleteAlbum: (id) => request(`/api/albums/${id}`, { method: 'DELETE' }),
 
   catalogSections: () => request('/api/catalog/sections'),
