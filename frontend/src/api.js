@@ -52,6 +52,7 @@ export const api = {
     return request(`/api/catalog/groups${suffix}`)
   },
   catalogCovers: () => post('/api/catalog/covers'),
+  coverProxy: (url) => `/api/catalog/cover?url=${encodeURIComponent(url)}`,
   downloadTorrent: (t) => post('/api/catalog/download', { t }),
   catalogTree: () => request('/api/catalog/tree'),
   saveCatalogTree: (enabled) => post('/api/catalog/tree', { enabled }),

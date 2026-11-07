@@ -57,6 +57,9 @@ export default function Tracker({ notify, onAlbumAdded }) {
   const [reloadTick, setReloadTick] = useState(0)
   const [sectionQuery, setSectionQuery] = useState('')
   const [collapsedCats, setCollapsedCats] = useState({})
+  const [refreshDepth, setRefreshDepth] = useState(3)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshInfo, setRefreshInfo] = useState(null)
 
   const loadTree = async () => {
     try {
@@ -226,6 +229,68 @@ export default function Tracker({ notify, onAlbumAdded }) {
     }
   }
 
+  // «Обновить раздачи»: краулинг RuTracker (текущий раздел или все включённые),
+  // глубина 0 = авто по пагинации (полный форум). Прогресс — polling статуса.
+  function pollRefresh() {
+    const tick = async () => {
+      let s = null
+      try {
+        s = await api.catalogRefreshStatus()
+      } catch {
+        // статус недоступен — прекращаем опрос
+      }
+      if (s && s.running) {
+        setRefreshInfo(s)
+        setTimeout(tick, 3000)
+        return
+      }
+      setRefreshing(false)
+      const crawled = s ? s.crawled : 0
+      setRefreshInfo(null)
+      setReloadTick((t) => t + 1)
+      notify(`Каталог обновлён: ${crawled} раздач просмотрено`, 'success')
+    }
+    setTimeout(tick, 2000)
+  }
+
+  async function refreshTorrents() {
+    const forums = forumIds.length ? forumIds : allEnabledLeaves()
+    if (!forums.length) {
+      notify('Нет включённых разделов — выбери разделы', 'error')
+      return
+    }
+    setRefreshing(true)
+    try {
+      const res = await api.catalogRefresh(forums, refreshDepth)
+      if (!res.ok) {
+        notify(res.error || 'не удалось начать обновление', 'error')
+        setRefreshing(false)
+        return
+      }
+      const depth = refreshDepth === 0 ? 'полная глубина' : `до ${refreshDepth * 50} тем`
+      notify(`Обновление ${forums.length} разделов (${depth}) запущено`, 'success')
+      pollRefresh()
+    } catch (e) {
+      notify(e.message, 'error')
+      setRefreshing(false)
+    }
+  }
+
+  // подхватить уже идущее обновление (начатое другой вкладкой/ранее)
+  useEffect(() => {
+    api
+      .catalogRefreshStatus()
+      .then((s) => {
+        if (s && s.running) {
+          setRefreshing(true)
+          setRefreshInfo(s)
+          pollRefresh()
+        }
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const chip = (active) =>
     `flex shrink-0 items-center gap-1.5 rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
       active
@@ -379,6 +444,34 @@ export default function Tracker({ notify, onAlbumAdded }) {
           <option value="name">По исполнителю</option>
         </select>
 
+        <select
+          value={refreshDepth}
+          onChange={(e) => setRefreshDepth(Number(e.target.value))}
+          disabled={refreshing}
+          title="Глубина обновления: сколько тем с форума краулить"
+          className="h-9 rounded-sm border border-transparent bg-surface-inset px-2 text-[12.5px] text-text-primary focus:border-strong focus:outline-none disabled:opacity-50"
+        >
+          <option value={1}>Топ-50</option>
+          <option value={3}>Топ-150</option>
+          <option value={0}>Всё (полный форум)</option>
+        </select>
+
+        <button
+          type="button"
+          onClick={refreshTorrents}
+          disabled={refreshing}
+          className="flex h-9 items-center gap-1.5 rounded-sm bg-surface-1 px-2.5 text-[12.5px] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
+        >
+          {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          Обновить раздачи
+        </button>
+
+        {refreshInfo && (
+          <span className="font-mono text-[11px] text-text-muted">
+            {refreshInfo.done}/{refreshInfo.total} разделов, {refreshInfo.crawled} раздач
+          </span>
+        )}
+
         <span className="font-mono text-[11px] text-text-muted">{count} релизов</span>
       </div>
 
@@ -412,10 +505,14 @@ export default function Tracker({ notify, onAlbumAdded }) {
                 <div className="relative aspect-square w-full overflow-hidden bg-surface-inset">
                   {g.cover_url ? (
                     <img
-                      src={g.cover_url}
+                      src={api.coverProxy(g.cover_url)}
                       alt={g.album || g.artist || ''}
                       loading="lazy"
-                      className="h-full w-full object-cover"
+                      decoding="async"
+                      className="h-full w-full object-cover opacity-0 transition-opacity duration-500 data-[loaded=true]:opacity-100"
+                      onLoad={(e) => {
+                        e.currentTarget.dataset.loaded = 'true'
+                      }}
                       onError={(e) => {
                         e.currentTarget.style.display = 'none'
                       }}

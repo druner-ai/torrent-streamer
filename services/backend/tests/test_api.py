@@ -1024,3 +1024,123 @@ def test_split_genres():
         ["Hard Bop", "Post-Bop", "Fusion"]
     assert main._split_genres("Jazz, jazz, Bop") == ["Jazz", "Bop"]
     assert main._split_genres(None) == []
+
+
+# ---------- обложки каталога: тамбнейлы, прокси-кэш ----------
+def test_thumb_url():
+    u = "https://coverartarchive.org/release/3c5f41b4/22083009552.jpg"
+    assert main._thumb_url(u) == u.replace(".jpg", "-500.jpg")
+    # идемпотентно: уже тамбнейл — не трогаем размер
+    assert main._thumb_url(main._thumb_url(u)) == main._thumb_url(u)
+    assert main._thumb_url("http://example.com/a.jpg") == "http://example.com/a.jpg"
+    assert main._thumb_url(None) is None
+
+
+def test_migrate_cover_thumbs(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        with main.db() as c:
+            c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,
+                          crawled_at,cover_url) VALUES(1,7,'x','1GB',1,0,0,?)""",
+                      ("https://coverartarchive.org/release/abc/123.jpg",))
+            c.commit()
+        assert main._migrate_cover_thumbs() == 1
+        with main.db() as c:
+            u = c.execute("SELECT cover_url FROM catalog WHERE t=1").fetchone()["cover_url"]
+        assert u.endswith("-500.jpg")
+        assert main._migrate_cover_thumbs() == 0  # повтор — no-op
+
+
+def test_cover_proxy_caches_and_whitelists(tmp_path):
+    jpg = b"\xff\xd8\xff\xe0fakejpeg"
+    url = "https://coverartarchive.org/release/abc/123-500.jpg"
+    with patch.object(main, "COVER_CACHE_DIR", str(tmp_path)), \
+         patch.object(main.requests, "get") as get:
+        get.return_value = Mock(status_code=200, content=jpg,
+                                raise_for_status=Mock())
+        r1 = client.get(f"/api/catalog/cover?url={url}")
+        r2 = client.get(f"/api/catalog/cover?url={url}")
+        assert r1.status_code == 200 and r1.content == jpg
+        assert r2.status_code == 200
+        get.assert_called_once()  # второй запрос — из кэша, без сети
+        assert list(tmp_path.glob("cat_*.jpg"))
+    # чужой домен — 400
+    r = client.get("/api/catalog/cover?url=https://evil.com/a.jpg")
+    assert r.status_code == 400
+    # HTML вместо картинки — 404
+    with patch.object(main, "COVER_CACHE_DIR", str(tmp_path / "x")), \
+         patch.object(main.requests, "get") as get:
+        get.return_value = Mock(status_code=200, content=b"<html>404</html>",
+                                raise_for_status=Mock())
+        r = client.get(f"/api/catalog/cover?url={url}")
+        assert r.status_code == 404
+
+
+# ---------- in_library: точная связь + fuzzy-матчинг ----------
+def test_key_tokens_fuzzy_match():
+    a = main._key_tokens("|the who - 1975 - the who by numbers  super deluxe  (16_44)")
+    b = main._key_tokens("the who|the who by numbers")
+    assert main._keys_match(a, b)  # b ⊂ a после очистки от шума
+    assert not main._keys_match(b, main._key_tokens("miles davis|kind of blue"))
+    assert not main._keys_match(frozenset(), b)
+    assert not main._keys_match(frozenset({"x"}), b)  # <2 токенов — не матч
+
+
+def test_in_library_fuzzy_and_exact(tmp_path):
+    def _ins(c, t, album, rk):
+        c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,
+                      crawled_at,lossless,artist,album,release_key)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                  (t, 2277, f"{album} - X (2020)", "1GB", 1, 0, 0, 1, "X", album, rk))
+
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        with main.db() as c:
+            _ins(c, 100, "The Who By Numbers", "the who|the who by numbers")
+            _ins(c, 200, "Concerts", "jacques|concerts")
+            # fuzzy: albums-ключ из полного имени торрента (год/издание/формат — шум)
+            c.execute("""INSERT INTO albums(hash,name,status,added_at,release_key)
+                         VALUES('h1','torrent','complete',0,
+                                '|the who - 1975 - the who by numbers  super deluxe  (16_44)')""")
+            # exact: catalog_t = 200, ключ-мусор
+            c.execute("""INSERT INTO albums(hash,name,status,added_at,release_key,catalog_t)
+                         VALUES('h2','torrent','complete',0,'|zzz qqq',200)""")
+            c.commit()
+        r = client.get("/api/catalog/groups?forum_id=2277")
+        assert r.status_code == 200
+        by_album = {g["album"]: g["in_library"] for g in r.json()["groups"]}
+        assert by_album["The Who By Numbers"] is True   # fuzzy-матчинг
+        assert by_album["Concerts"] is True             # точный catalog_t
+
+
+# ---------- краулер: авто-глубина и retry ----------
+def test_crawl_forum_auto_pages():
+    page1 = '<a href="viewforum.php?f=7&amp;start=50">2</a><a href="viewforum.php?f=7&amp;start=100">3</a>'
+    calls = []
+
+    def fake_get(url):
+        calls.append(url)
+        return page1 if "start=" not in url else ""
+
+    rows = [{"t": 1, "title": "a", "seeders": 1}, {"t": 2, "title": "b", "seeders": 1}]
+    with patch.object(main, "_flaresolverr_get", side_effect=fake_get), \
+         patch.object(main, "_parse_forum_page", side_effect=[rows, rows, rows]):
+        out = main.crawl_forum(7, pages=0)
+    # авто-глубина: max(start)=100 → 3 страницы (start 0,50,100)
+    assert len(out) == 6
+    assert len(calls) == 3
+    assert all(r["forum_id"] == 7 for r in out)
+
+
+def test_crawl_forum_retries_flaky_page():
+    calls = []
+
+    def fake_get(url):
+        calls.append(url)
+        return ""
+
+    rows = [{"t": 1, "title": "a", "seeders": 1}]
+    # страница 2: первый fetch пустой (сбой FlareSolverr), retry отдаёт строки
+    with patch.object(main, "_flaresolverr_get", side_effect=fake_get), \
+         patch.object(main, "_parse_forum_page", side_effect=[rows, [], rows, []]):
+        out = main.crawl_forum(7, pages=2)
+    assert len(out) == 2
+    assert len(calls) == 3  # start=50 запрошен дважды (retry)

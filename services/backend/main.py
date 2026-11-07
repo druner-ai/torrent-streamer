@@ -4,6 +4,7 @@ torrent-streamer backend — связывает qbittorrent (download) + MPD (pl
 """
 import base64
 import contextlib
+import hashlib
 import html
 import json
 import os
@@ -19,7 +20,7 @@ from typing import Annotated
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from mpd import MPDClient
 from mutagen import File as MutagenFile
@@ -321,7 +322,17 @@ async def lifespan(_app):
     _start_ts(_ep_addr(_active_ep_name()) or "")
     _watchdog = threading.Thread(target=_ep_watchdog, daemon=True)
     _watchdog.start()
+    # обложки каталога: одноразовая миграция URL в тамбнейлы + фоновое обогащение
+    try:
+        n = _migrate_cover_thumbs()
+        if n:
+            print(f"[covers] мигрировано в тамбнейлы: {n}", flush=True)
+    except Exception as e:  # noqa: BLE001 — миграция не должна ронять старт
+        print(f"[covers] миграция тамбнейлов: {e}", flush=True)
+    _cover_thread = threading.Thread(target=_cover_worker, daemon=True)
+    _cover_thread.start()
     yield
+    _COVER_STOP.set()
     _stop_ts()
 
 
@@ -412,6 +423,8 @@ def _schema(c):
     for col in ("artist", "cover_url", "release_key"):
         with contextlib.suppress(sqlite3.OperationalError):
             c.execute(f"ALTER TABLE albums ADD COLUMN {col} TEXT")
+    with contextlib.suppress(sqlite3.OperationalError):
+        c.execute("ALTER TABLE albums ADD COLUMN catalog_t INTEGER")
     c.execute("""CREATE TABLE IF NOT EXISTS tracks(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         album_id INTEGER, path TEXT, name TEXT, size INTEGER)""")
@@ -496,6 +509,35 @@ def _release_key(artist, name):
     key = re.sub(r"\([^)]*\)", " ", key)
     key = re.sub(r"\s+", " ", key).strip().lower()
     return f"{(artist or '').strip().lower()}|{key}"
+
+
+# форматный/технический шум в названиях раздач — не участвует в fuzzy-матчинге
+_KEY_NOISE = re.compile(
+    r"\b(flac|ape|mp3|alac|wav|wavpack|dsd|dsf|dff|ogg|opus|aac|m4a|lossless|lossy|"
+    r"cue|log|tracks|image|cd|web|sacd|vinyl|dvd|hires|hi-res|tr24|kbps|of|deluxe|"
+    r"edition|remaster(ed)?|reissue|anniversary)\b", re.IGNORECASE)
+
+
+def _key_tokens(rk: str | None) -> frozenset:
+    """множество значимых токенов release_key для fuzzy-сверки каталог ↔ библиотека.
+
+    Ключи albums (из полного имени торрента) и catalog (из парсера) никогда не
+    совпадают дословно («the who - 1975 - the who by numbers» vs «the who|the who
+    by numbers»), поэтому сверяем множества токенов с очисткой от форматного шума."""
+    if not rk:
+        return frozenset()
+    txt = rk.replace("|", " ")
+    txt = re.sub(r"[\[\]{}()]", " ", txt)
+    txt = _KEY_NOISE.sub(" ", txt)
+    toks = {t for t in re.split(r"[^0-9a-zа-яё]+", txt.lower()) if len(t) > 1}
+    return frozenset(toks)
+
+
+def _keys_match(a: frozenset, b: frozenset) -> bool:
+    """fuzzy-совпадение релизов: одно множество токенов содержит другое (мин. 2 токена)."""
+    if len(a) < 2 or len(b) < 2:
+        return False
+    return a <= b or b <= a
 
 
 # канонические имена кодеков (в названиях регистр разнобойный: WavPack/WAVPack, Ape/APE)
@@ -617,6 +659,17 @@ def _parse_torrent_title(title: str) -> dict:
             "source": source, "rip": rip, "quality": quality}
 
 
+def _thumb_url(url: str | None, size: int = 500) -> str | None:
+    """CAA-ссылка на полноразмерный JPEG → тамбнейл (идемпотентно: -500.jpg остаётся -500.jpg).
+
+    Полноразмерные обложки CAA — 300-500 КБ и 2 редиректа на archive.org (~4 с из РФ/РБ);
+    тамбнейл 500px — ~50 КБ, в сетке карточек ~150px этого хватает с запасом на retina."""
+    if not url:
+        return None
+    m = re.match(r"^(https?://coverartarchive\.org/release/[^/]+/\d+)(?:-\d+)?\.jpg$", url)
+    return f"{m.group(1)}-{size}.jpg" if m else url
+
+
 def enrich_album(name: str) -> dict | None:
     try:
         r = requests.get(
@@ -651,7 +704,7 @@ def enrich_album(name: str) -> dict | None:
                 front = next((i for i in images if i.get("front")),
                              images[0] if images else None)
                 if front:
-                    cover_url = front.get("image")
+                    cover_url = _thumb_url(front.get("image"))
             except Exception:  # noqa: BLE001 — нет обложки/таймаут → None
                 cover_url = None
         return {"artist": artist, "title": title, "cover_url": cover_url}
@@ -670,12 +723,31 @@ def _enrich_covers(limit: int = 300) -> int:
     for r in rows:
         q = " ".join(x for x in (r["artist"], r["album"]) if x)
         meta = enrich_album(q)
+        time.sleep(1.05)  # MusicBrainz rate limit — 1 req/s
         if meta and meta.get("cover_url"):
             with db() as c:
                 c.execute("UPDATE catalog SET cover_url=? WHERE release_key=?",
-                          (meta["cover_url"], r["release_key"]))
+                          (_thumb_url(meta["cover_url"]), r["release_key"]))
                 c.commit()
             n += 1
+    return n
+
+
+def _migrate_cover_thumbs() -> int:
+    """одноразово: полноразмерные CAA-URL в БД → тамбнейлы -500.jpg."""
+    n = 0
+    with db() as c:
+        for table in ("catalog", "albums"):
+            rows = c.execute(
+                f"SELECT rowid AS rid, cover_url FROM {table} "
+                "WHERE cover_url LIKE '%coverartarchive.org%'").fetchall()
+            for r in rows:
+                t = _thumb_url(r["cover_url"])
+                if t and t != r["cover_url"]:
+                    c.execute(f"UPDATE {table} SET cover_url=? WHERE rowid=?",
+                              (t, r["rid"]))
+                    n += 1
+        c.commit()
     return n
 
 
@@ -802,16 +874,25 @@ def _parse_forum_page(page: str) -> list[dict]:
     return rows
 
 
+_MAX_CRAWL_PAGES = 200  # cap для pages=0 (авто-глубина): 200×50 = 10 000 тем на форум
+
+
 def crawl_forum(forum_id: int, pages: int = 3) -> list[dict]:
-    rows = []
-    for p in range(pages):
+    """краулит подфорум; pages=0 → авто-глубина по пагинации RuTracker (cap _MAX_CRAWL_PAGES)."""
+    first_url = f"{RUTRACKER_BASE}/viewforum.php?f={forum_id}"
+    first_html = _flaresolverr_get(first_url)
+    rows = [dict(r, forum_id=forum_id) for r in _parse_forum_page(first_html)]
+    if pages <= 0:
+        starts = [int(x) for x in re.findall(r"start=(\d+)", first_html)]
+        pages = min((max(starts) // 50 + 1) if starts else 1, _MAX_CRAWL_PAGES)
+    for p in range(1, pages):
         url = f"{RUTRACKER_BASE}/viewforum.php?f={forum_id}&start={p * 50}"
         page = _parse_forum_page(_flaresolverr_get(url))
+        if not page:  # разовый сбой FlareSolverr не должен обрывать краулинг
+            page = _parse_forum_page(_flaresolverr_get(url))
         if not page:
-            break  # пустая/последняя страница
-        for r in page:
-            r["forum_id"] = forum_id
-        rows += page
+            break  # два пустых ответа подряд = конец списка (или трекер лежит)
+        rows += [dict(r, forum_id=forum_id) for r in page]
     return rows
 
 
@@ -987,12 +1068,19 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
     else:
         out = sorted(groups.values(), key=lambda g: -max(e["seeders"] for e in g["editions"]))
     with db() as c:
-        lib = {r["release_key"] for r in c.execute(
-            "SELECT DISTINCT release_key FROM albums WHERE release_key IS NOT NULL").fetchall()}
+        lib_rows = c.execute("SELECT release_key, catalog_t FROM albums").fetchall()
+    lib_exact = {r["release_key"] for r in lib_rows if r["release_key"]}
+    lib_t = {r["catalog_t"] for r in lib_rows if r["catalog_t"] is not None}
+    lib_keys = [k for k in (_key_tokens(r["release_key"]) for r in lib_rows) if len(k) >= 2]
     for g in out:
         g["editions"].sort(key=lambda e: -e["seeders"])
         g["count"] = len(g["editions"])
-        g["in_library"] = g["release_key"] in lib
+        # «в библиотеке»: точная связь раздачи (catalog_t) → дословный ключ → fuzzy-токены
+        gk = _key_tokens(g["release_key"])
+        g["in_library"] = (
+            g["release_key"] in lib_exact
+            or any(e["t"] in lib_t for e in g["editions"])
+            or any(_keys_match(gk, lk) for lk in lib_keys))
     facets = {
         "genres": [{"name": k, "count": v} for k, v in
                    sorted(genres_ct.items(), key=lambda x: -x[1])[:30]],
@@ -1083,6 +1171,63 @@ def catalog_covers(limit: int = 300):
     return {"ok": True, "covers": _enrich_covers(limit)}
 
 
+_COVER_HOSTS = ("coverartarchive.org", "archive.org")
+
+
+@app.get("/api/catalog/cover")
+def catalog_cover_proxy(url: str):
+    """прокси обложек каталога с кэшем на диске.
+
+    Браузер ходит только на backend (LAN/Tailscale — миллисекунды); медленный
+    archive.org оплачивается один раз на сервере и кэшируется навсегда.
+    Заодно снимает mixed-content для http://-URL из старых записей."""
+    p = urllib.parse.urlparse(url)
+    host = (p.hostname or "").lower()
+    if p.scheme not in ("http", "https") or not any(
+            host == h or host.endswith("." + h) for h in _COVER_HOSTS):
+        raise HTTPException(400, "недопустимый источник обложки")
+    cache_dir = Path(COVER_CACHE_DIR)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"cat_{hashlib.sha1(url.encode()).hexdigest()[:24]}.jpg"
+    if cache_file.exists():
+        return FileResponse(cache_file, media_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=604800"})
+    try:
+        r = requests.get(url, headers={"User-Agent": MUSICBRAINZ_UA},
+                         timeout=20, allow_redirects=True)
+        r.raise_for_status()
+        data = r.content
+    except requests.RequestException:
+        raise HTTPException(502, "источник обложки недоступен") from None
+    if not data or data[:64].lstrip().startswith(b"<"):
+        raise HTTPException(404, "обложка не найдена")
+    tmp = cache_file.with_suffix(".part")
+    tmp.write_bytes(data)
+    os.replace(tmp, cache_file)  # атомарно: частичный файл не кэшируется
+    return FileResponse(cache_file, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=604800"})
+
+
+_COVER_STOP = threading.Event()
+
+
+def _cover_worker():
+    """фоновое обогащение обложек каталога: пачка за пачкой, MB rate limit 1 req/s."""
+    while not _COVER_STOP.wait(120):  # первый заход через 2 мин после старта
+        try:
+            with db() as c:
+                left = c.execute(
+                    "SELECT COUNT(*) AS n FROM (SELECT DISTINCT release_key FROM catalog "
+                    "WHERE artist IS NOT NULL AND album IS NOT NULL "
+                    "AND cover_url IS NULL)").fetchone()["n"]
+            if not left:
+                continue
+            got = _enrich_covers(25)
+            print(f"[covers] +{got} обложек, осталось ~{left - got}", flush=True)
+        except Exception as e:  # noqa: BLE001 — воркер не должен умирать
+            print(f"[covers] ошибка воркера: {e}", flush=True)
+
+
 def _rutracker_cookies() -> list[dict]:
     """логин RuTracker через FlareSolverr → cookies (bb_session и др.)."""
     data = ("login_username=" + urllib.parse.quote(_rutracker_login())
@@ -1113,7 +1258,7 @@ def catalog_download(req: CatalogDownloadReq):
     qb = QB()
     before = {t.get("hash") for t in qb.info() if t.get("hash")}
     qb.add_file(path)
-    imported = _import_torrent(qb, before)
+    imported = _import_torrent(qb, before, catalog_t=req.t)
     return {"ok": True, "t": req.t, "bytes": len(r.content), **imported}
 
 
@@ -1207,7 +1352,7 @@ def mpd_cmd(fn):
 class AddReq(BaseModel):
     link: str
 
-def _register_album(h: str, name: str, files: list) -> tuple[int, list]:
+def _register_album(h: str, name: str, files: list, catalog_t: int | None = None) -> tuple[int, list]:
     """создаёт запись альбома + треки в библиотеке; возвращает (album_id, audio_files)."""
     audio = [f for f in files if Path(f["name"]).suffix.lower() in AUDIO_EXT]
     if not audio:
@@ -1221,9 +1366,10 @@ def _register_album(h: str, name: str, files: list) -> tuple[int, list]:
         artist = meta.get("artist") if meta else None
         cover_url = meta.get("cover_url") if meta else None
         cur = c.execute(
-            "INSERT INTO albums(hash,name,status,added_at,artist,cover_url,release_key) VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO albums(hash,name,status,added_at,artist,cover_url,release_key,catalog_t) "
+            "VALUES(?,?,?,?,?,?,?,?)",
             (h, name, "downloading", int(time.time()), artist, cover_url,
-             _release_key(artist, name)),
+             _release_key(artist, name), catalog_t),
         )
         aid = cur.lastrowid
         for f in audio:
@@ -1235,8 +1381,8 @@ def _register_album(h: str, name: str, files: list) -> tuple[int, list]:
     return aid, audio
 
 
-def _import_torrent(qb: "QB", before: set) -> dict:
-    """ждёт метаданные нового торрента (hash не из `before`) и заводит альбом в библиотеку."""
+def _import_torrent(qb: "QB", before: set, catalog_t: int | None = None) -> dict:
+    """ждёт метаданные нового торрента (hash не из `before`) и заводит альбом в библиотеке."""
     info = None
     for _ in range(60):
         time.sleep(1)
@@ -1249,7 +1395,7 @@ def _import_torrent(qb: "QB", before: set) -> dict:
     if not info:
         raise HTTPException(500, "не удалось получить метаданные торрента")
     h = info["hash"]
-    aid, audio = _register_album(h, info["name"], qb.files(h))
+    aid, audio = _register_album(h, info["name"], qb.files(h), catalog_t=catalog_t)
     qb.set_priority(h, {f["name"] for f in audio})
     return {"album_id": aid, "hash": h, "name": info["name"], "tracks": len(audio)}
 
