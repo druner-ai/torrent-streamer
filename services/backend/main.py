@@ -38,6 +38,7 @@ MPD_PORT = int(os.getenv("MPD_PORT", "6600"))
 OAAT_TARGET = os.getenv("OAAT_TARGET", "192.168.31.215:9740")
 TS_CONTROLLER_SOCK = os.getenv("TS_CONTROLLER_SOCK", "/tmp/ts-controller.sock")
 TS_CONTROLLER_BIN = os.getenv("TS_CONTROLLER_BIN", "ts-controller")
+TS_CONTROLLER_LOG = os.getenv("TS_CONTROLLER_LOG", "/tmp/ts-controller.log")
 
 
 # ---------- мульти-эндпоинт: имя=кандидаты через запятую, кандидаты через | ----------
@@ -241,6 +242,7 @@ def _set_active_ep(name: str) -> None:
 
 # ts-controller — один процесс, держит соединение с АКТИВНЫМ endpoint'ом.
 _TS_PROC = None
+_TS_LOGF = None  # append-лог ts-controller (переживает рестарты контроллера)
 
 
 def _stop_ts() -> None:
@@ -255,14 +257,19 @@ def _stop_ts() -> None:
 
 
 def _start_ts(target: str) -> None:
-    global _TS_PROC
+    global _TS_PROC, _TS_LOGF
     _stop_ts()
     if not target:
         return
     try:
+        # лог контроллера — в файл (был DEVNULL: падения/паники невозможно diagnose)
+        with contextlib.suppress(OSError):
+            if _TS_LOGF is None or _TS_LOGF.closed:
+                _TS_LOGF = open(TS_CONTROLLER_LOG, "ab")  # noqa: SIM115 — живет весь процесс
         _TS_PROC = subprocess.Popen(
             [TS_CONTROLLER_BIN, "--target", target, "--socket", TS_CONTROLLER_SOCK],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=_TS_LOGF if _TS_LOGF and not _TS_LOGF.closed else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
         )
     except OSError as e:
         # нет бинаря/права — деградируем: приложение живёт, аудио недоступно.
@@ -2246,6 +2253,15 @@ def _player_monitor():
                 _auto_advance()
             except Exception as e:  # noqa: BLE001 — сбой старта не роняет монитор
                 print(f"[player] автопереход не удался: {e}", flush=True)
+                # контроллер мог умереть в момент конца трека — watchdog его
+                # поднимет; даём один повторный шанс через несколько секунд
+                time.sleep(6)
+                if _QUEUE and 0 <= _QUEUE_POS < len(_QUEUE):
+                    try:
+                        _auto_advance()
+                        print("[player] автопереход удался со второй попытки", flush=True)
+                    except Exception as e2:  # noqa: BLE001
+                        print(f"[player] автопереход (retry) не удался: {e2}", flush=True)
         was_playing = state == "playing"
 
 
