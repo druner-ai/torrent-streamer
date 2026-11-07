@@ -14,11 +14,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from unittest.mock import Mock, patch
 
 import main
+import pytest
 import requests
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 client = TestClient(main.app)
+
+
+@pytest.fixture(autouse=True)
+def _clear_groups_cache():
+    """кэш /api/catalog/groups не должен протекать между тестами (разные tmp БД)."""
+    main._GROUPS_CACHE.clear()
+    yield
+    main._GROUPS_CACHE.clear()
 
 
 def test_albums_empty_when_no_albums_and_no_torrents():
@@ -1358,3 +1367,26 @@ def test_replaygain_endpoint(tmp_path):
 def test_wav_path_rg_variant():
     assert main._wav_path(3, 1) == "/tmp/oaat_stream_3_1.wav"
     assert main._wav_path(3, 1, rg=True) == "/tmp/oaat_stream_3_1_rg.wav"
+
+
+def test_groups_cache_hit_and_clear(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        with main.db() as c:
+            c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
+                          lossless,artist,album,release_key)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                      (1, 2277, "X - A (2000) FLAC", "1GB", 5, 0, 0, 1, "X", "A", "x|a"))
+            c.commit()
+        r1 = client.get("/api/catalog/groups?limit=10")
+        assert r1.json()["total"] == 1
+        assert len(main._GROUPS_CACHE) == 1
+        # вторая строка в БД — закэшированный ответ её ещё не видит
+        with main.db() as c:
+            c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
+                          lossless,artist,album,release_key)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                      (2, 2277, "Y - B (2001) FLAC", "1GB", 3, 0, 0, 1, "Y", "B", "y|b"))
+            c.commit()
+        assert client.get("/api/catalog/groups?limit=10").json()["total"] == 1
+        main._GROUPS_CACHE.clear()  # как _save_crawled после краула
+        assert client.get("/api/catalog/groups?limit=10").json()["total"] == 2

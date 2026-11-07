@@ -21,6 +21,7 @@ from typing import Annotated
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from mpd import MPDClient
@@ -353,6 +354,8 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="torrent-streamer", lifespan=lifespan)
+# JSON каталога ~200KB — gzip режет его в 5-8 раз (мобильный доступ через relay)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # ---------- OAAT (ts-controller, persistent) ----------
 _OAAT_ALBUM_ID = None
@@ -1031,19 +1034,14 @@ def _split_genres(genre: str | None) -> list[str]:
     return out
 
 
-@app.get("/api/catalog/groups")
-def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
-                   min_seeders: int = 0, lossless: bool | None = None, q: str | None = None,
-                   genre: str | None = None, format: str | None = None,
-                   source: str | None = None, rip: str | None = None,
-                   quality: str | None = None, sort: str = "seeders",
-                   artist: str | None = None, limit: int = 0, offset: int = 0):
-    """раздачи, сгруппированные по релизу (release_key) → выбор качества (издания)."""
-    sql = "SELECT * FROM catalog WHERE 1=1"
+def _groups_where(forum_id, min_seeders, lossless, q, genre, format, source, rip,
+                  quality, artist, with_genre: bool = True) -> tuple[str, list]:
+    """общий WHERE-конструктор для catalog_groups (SQL-фильтры вместо Python)."""
+    sql = " FROM catalog WHERE 1=1"
     params: list = []
     if forum_id:
         sql += f" AND forum_id IN ({','.join('?' * len(forum_id))})"
-        params += forum_id
+        params += list(forum_id)
     if min_seeders > 0:
         sql += " AND seeders>=?"
         params.append(min_seeders)
@@ -1069,26 +1067,86 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
         sql += " AND (title LIKE ? OR artist LIKE ? OR album LIKE ?)"
         like = f"%{q}%"
         params += [like, like, like]
+    if genre and with_genre:
+        sql += " AND genre LIKE ? COLLATE NOCASE"
+        params.append(f"%{genre}%")
+    return sql, params
+
+
+# кэш ответов groups: каталог меняется редко, а страница дёргает API на каждый чип
+_GROUPS_CACHE: dict = {}
+_GROUPS_CACHE_TTL = 60.0
+_GROUPS_CACHE_MAX = 32
+
+
+@app.get("/api/catalog/groups")
+def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
+                   min_seeders: int = 0, lossless: bool | None = None, q: str | None = None,
+                   genre: str | None = None, format: str | None = None,
+                   source: str | None = None, rip: str | None = None,
+                   quality: str | None = None, sort: str = "seeders",
+                   artist: str | None = None, limit: int = 0, offset: int = 0):
+    """раздачи, сгруппированные по релизу (release_key) → выбор качества (издания).
+
+    Группировка/сортировка/пагинация — в SQLite (каталог 100k+ строк); в Python
+    собираются только издания групп текущей страницы. Ответ кэшируется на 60с
+    (сбрасывается при сохранении нового краула).
+    """
+    cache_key = (tuple(forum_id or ()), min_seeders, lossless, q, genre, format,
+                 source, rip, quality, artist, sort, limit, offset)
+    hit = _GROUPS_CACHE.get(cache_key)
+    if hit and time.time() - hit[0] < _GROUPS_CACHE_TTL:
+        return hit[1]
+
+    args = (forum_id, min_seeders, lossless, q, genre, format, source, rip,
+            quality, artist)
+    where, params = _groups_where(*args)
+    # facets считаются БЕЗ genre-фильтра, чтобы чипы жанров не схлопывались
+    fwhere, fparams = _groups_where(*args, with_genre=False)
+    order = {
+        "new": "max_lp DESC",
+        "reg": "max_reg DESC",  # NULL (неизвестные даты) в SQLite DESC уходят в конец
+        "year": "min_year ASC, max_seed DESC",
+        "name": "sort_name COLLATE NOCASE ASC",
+    }.get(sort, "max_seed DESC")
+    lim = limit if limit > 0 else -1
     with db() as c:
-        rows = c.execute(sql, params).fetchall()
-    # facets — счётчики для чипов фильтров (по отфильтрованным строкам)
+        total = c.execute(
+            f"SELECT COUNT(DISTINCT release_key) AS n{where}", params).fetchone()["n"]
+        page = c.execute(
+            "SELECT release_key, MAX(seeders) AS max_seed,"
+            " MAX(COALESCE(last_post,0)) AS max_lp, MAX(reg_date) AS max_reg,"
+            " MIN(CASE WHEN year IS NULL OR year='' THEN '9999' ELSE year END) AS min_year,"
+            " MIN(COALESCE(NULLIF(artist,''), NULLIF(album,''), '')) AS sort_name"
+            f"{where} GROUP BY release_key ORDER BY {order} LIMIT ? OFFSET ?",
+            [*params, lim, offset]).fetchall()
+        keys = [r["release_key"] for r in page]
+        rows = []
+        if keys:
+            ph = ",".join("?" * len(keys))
+            rows = c.execute(
+                f"SELECT *{where} AND release_key IN ({ph})", [*params, *keys]).fetchall()
+        fmt_rows = c.execute(
+            f"SELECT format AS k, COUNT(*) AS n{fwhere}"
+            " AND format IS NOT NULL AND format!='' GROUP BY format ORDER BY n DESC",
+            fparams).fetchall()
+        src_rows = c.execute(
+            f"SELECT source AS k, COUNT(*) AS n{fwhere}"
+            " AND source IS NOT NULL AND source!='' GROUP BY source ORDER BY n DESC",
+            fparams).fetchall()
+        genre_rows = c.execute(
+            f"SELECT genre AS k, COUNT(*) AS n{fwhere}"
+            " AND genre IS NOT NULL AND genre!='' GROUP BY genre", fparams).fetchall()
+        lib_rows = c.execute("SELECT release_key, catalog_t FROM albums").fetchall()
+
     genres_ct: dict[str, int] = {}
-    formats_ct: dict[str, int] = {}
-    sources_ct: dict[str, int] = {}
+    for r in genre_rows:
+        for g in _split_genres(r["k"]):
+            genres_ct[g] = genres_ct.get(g, 0) + r["n"]
+
+    groups: dict = {}
     for r in rows:
-        for g in _split_genres(r["genre"]):
-            genres_ct[g] = genres_ct.get(g, 0) + 1
-        if r["format"]:
-            formats_ct[r["format"]] = formats_ct.get(r["format"], 0) + 1
-        if r["source"]:
-            sources_ct[r["source"]] = sources_ct.get(r["source"], 0) + 1
-    # genre-фильтр применяем ПОСЛЕ facets, чтобы чипы жанров не схлопывались
-    if genre:
-        gl = genre.lower()
-        rows = [r for r in rows if gl in (r["genre"] or "").lower()]
-    groups: dict[str, dict] = {}
-    for r in rows:
-        rk = r["release_key"] or _release_key(r["artist"], r["title"])
+        rk = r["release_key"]
         g = groups.setdefault(rk, {
             "release_key": rk, "artist": r["artist"], "album": r["album"],
             "year": r["year"], "cover_url": r["cover_url"], "genre": r["genre"],
@@ -1105,28 +1163,8 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
             "seeders": r["seeders"], "leechers": r["leechers"],
             "size": r["size"], "year": r["year"], "last_post": r["last_post"] or 0,
             "reg_date": r["reg_date"]})
-    if sort == "new":
-        out = sorted(groups.values(), key=lambda g: -(g["last_post"] or 0))
-    elif sort == "reg":
-        # дата регистрации известна только для скачанных (.torrent) — неизвестные в конец
-        def _max_reg(g):
-            return max((e["reg_date"] or "" for e in g["editions"]), default="")
+    out = [groups[k] for k in keys if k in groups]  # порядок страницы из SQL
 
-        out = sorted(groups.values(), key=_max_reg, reverse=True)
-        out = sorted(out, key=lambda g: _max_reg(g) == "")  # устойчиво: неизвестные вниз
-    elif sort == "year":
-        out = sorted(groups.values(),
-                     key=lambda g: (g["year"] or "9999",
-                                    -max(e["seeders"] for e in g["editions"])))
-    elif sort == "name":
-        out = sorted(groups.values(), key=lambda g: (g["artist"] or g["album"] or "").lower())
-    else:
-        out = sorted(groups.values(), key=lambda g: -max(e["seeders"] for e in g["editions"]))
-    total = len(out)
-    if limit > 0 or offset:
-        out = out[offset:offset + limit] if limit > 0 else out[offset:]
-    with db() as c:
-        lib_rows = c.execute("SELECT release_key, catalog_t FROM albums").fetchall()
     lib_exact = {r["release_key"] for r in lib_rows if r["release_key"]}
     lib_t = {r["catalog_t"] for r in lib_rows if r["catalog_t"] is not None}
     lib_keys = [k for k in (_key_tokens(r["release_key"]) for r in lib_rows) if len(k) >= 2]
@@ -1142,12 +1180,15 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
     facets = {
         "genres": [{"name": k, "count": v} for k, v in
                    sorted(genres_ct.items(), key=lambda x: -x[1])[:30]],
-        "formats": [{"name": k, "count": v} for k, v in
-                    sorted(formats_ct.items(), key=lambda x: -x[1])],
-        "sources": [{"name": k, "count": v} for k, v in
-                    sorted(sources_ct.items(), key=lambda x: -x[1])],
+        "formats": [{"name": r["k"], "count": r["n"]} for r in fmt_rows],
+        "sources": [{"name": r["k"], "count": r["n"]} for r in src_rows],
     }
-    return {"groups": out, "count": total, "total": total, "offset": offset, "facets": facets}
+    result = {"groups": out, "count": total, "total": total,
+              "offset": offset, "facets": facets}
+    if len(_GROUPS_CACHE) >= _GROUPS_CACHE_MAX:
+        _GROUPS_CACHE.pop(next(iter(_GROUPS_CACHE)))
+    _GROUPS_CACHE[cache_key] = (time.time(), result)
+    return result
 
 
 @app.get("/api/catalog/artists")
@@ -1205,6 +1246,7 @@ def _save_crawled(crawled: list[dict]) -> int:
                  p["source"], p["rip"], p["quality"], r["last_post"]),
             )
         c.commit()
+    _GROUPS_CACHE.clear()  # каталог изменился — кэш групп недействителен
     return len(crawled)
 
 
