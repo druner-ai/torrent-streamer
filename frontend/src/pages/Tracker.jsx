@@ -49,7 +49,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(null)
-  const [downloadingT, setDownloadingT] = useState(null)
+  const [downloadingTs, setDownloadingTs] = useState(() => new Set())
   const [sectionsOpen, setSectionsOpen] = useState(false)
   const [draftEnabled, setDraftEnabled] = useState(null)
   const [treeSaving, setTreeSaving] = useState(false)
@@ -223,19 +223,27 @@ export default function Tracker({ notify, onAlbumAdded }) {
     [activeCategory, groupIdx],
   )
 
-  async function download(edition) {
-    setDownloadingT(edition.t)
-    try {
-      const res = await api.downloadTorrent(edition.t)
-      notify(`Добавлено в библиотеку: ${res.name || edition.title}`, 'success')
-      onAlbumAdded()
-      setReloadTick((t) => t + 1)
-      setSelected(null)
-    } catch (e) {
-      notify(e.message, 'error')
-    } finally {
-      setDownloadingT(null)
-    }
+  function download(edition) {
+    const t = edition.t
+    if (downloadingTs.has(t)) return
+    // окно закрываем сразу — закачка идёт в фоне, статус виден на обложке карточки
+    setSelected(null)
+    setDownloadingTs((s) => new Set(s).add(t))
+    api
+      .downloadTorrent(t)
+      .then((res) => {
+        notify(`Добавлено в библиотеку: ${res.name || edition.title}`, 'success')
+        onAlbumAdded()
+        setReloadTick((x) => x + 1)
+      })
+      .catch((e) => notify(e.message, 'error'))
+      .finally(() =>
+        setDownloadingTs((s) => {
+          const n = new Set(s)
+          n.delete(t)
+          return n
+        }),
+      )
   }
 
   function openSections() {
@@ -641,6 +649,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
           {groups.map((g) => {
             const top = [...g.editions].sort((a, b) => b.seeders - a.seeders)[0] || {}
             const regd = (g.editions || []).map((e) => e.reg_date).filter(Boolean).sort().pop()
+            const dl = (g.editions || []).some((e) => downloadingTs.has(e.t))
             const tone = seedersTone(top.seeders || 0)
             return (
               <button
@@ -679,6 +688,14 @@ export default function Tracker({ notify, onAlbumAdded }) {
                   {g.in_library && (
                     <span className="absolute right-2 top-2 rounded-xs bg-success/20 px-1.5 py-0.5 text-[10.5px] font-semibold text-success">
                       ✓
+                    </span>
+                  )}
+                  {dl && (
+                    <span className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/55">
+                      <Loader2 size={26} className="animate-spin text-primary" />
+                      <span className="font-mono text-[10.5px] font-semibold text-text-primary">
+                        Загрузка…
+                      </span>
                     </span>
                   )}
                 </div>
@@ -785,7 +802,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
                     <button
                       type="button"
                       onClick={() => download(e)}
-                      disabled={downloadingT === e.t || selected.in_library}
+                      disabled={downloadingTs.has(e.t) || selected.in_library}
                       className={`flex h-9 shrink-0 items-center gap-2 rounded-sm px-3 text-[13px] font-medium transition-colors ${
                         selected.in_library
                           ? 'bg-surface-2 text-success'
@@ -794,7 +811,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
                     >
                       {selected.in_library ? (
                         <>✓ В библиотеке</>
-                      ) : downloadingT === e.t ? (
+                      ) : downloadingTs.has(e.t) ? (
                         <Loader2 size={15} className="animate-spin" />
                       ) : (
                         <Download size={15} />
