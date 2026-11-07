@@ -2074,6 +2074,16 @@ def _ts_cmd(payload: dict) -> dict:
             if not buf:
                 return {"ok": False, "error": "контроллер не ответил"}
             return json.loads(buf.decode().strip())
+    except FileNotFoundError:
+        # ts-controller создаёт сокет только ПОСЛЕ подключения к endpoint'у:
+        # спящий/выключенный endpoint (напр. закрытый MacBook) = сокета нет.
+        return {"ok": False,
+                "error": f"нет связи с endpoint «{_active_ep_name()}» — устройство спит "
+                         "или не в сети; разбудите его или переключите endpoint в настройках"}
+    except ConnectionRefusedError:
+        return {"ok": False, "error": "контроллер перезапускается — повторите через пару секунд"}
+    except TimeoutError:
+        return {"ok": False, "error": "контроллер не ответил вовремя (5с)"}
     except (OSError, ValueError) as e:
         return {"ok": False, "error": str(e)}
 

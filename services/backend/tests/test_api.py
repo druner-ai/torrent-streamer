@@ -1582,3 +1582,12 @@ def test_endpoints_update_flow():
     with patch.object(main.requests, "get", side_effect=fake_get):
         d = client.get("/api/endpoints/update_check").json()
         assert d["ok"] and d["latest"] == "v9.9.9"
+
+
+def test_ts_cmd_missing_socket_human_error(monkeypatch):
+    """Спящий endpoint → сокета ts-controller нет → понятная ошибка, не Errno 2."""
+    monkeypatch.setattr(main, "TS_CONTROLLER_SOCK", "/tmp/_ts_nope.sock")
+    resp = main._ts_cmd({"cmd": "status"})
+    assert resp["ok"] is False
+    assert "нет связи с endpoint" in resp["error"]
+    assert "Errno" not in resp["error"]
