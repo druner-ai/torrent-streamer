@@ -49,6 +49,7 @@ services:
       - RUTRACKER_LOGIN=${RUTRACKER_LOGIN:-}
       - RUTRACKER_PASSWORD=${RUTRACKER_PASSWORD:-}
       - FRONTEND_AUTH=${FRONTEND_AUTH:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
     volumes:
       - ./data:/data
       - /home/nuc/oaat/target/release/ts-controller:/usr/local/bin/ts-controller:ro
