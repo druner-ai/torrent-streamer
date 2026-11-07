@@ -84,40 +84,56 @@ usability/надёжность, P2 = продуктовые фичи.
 
 ### P0 — блокеры клиентского пути
 
-1. **CI-сборка + упаковка эндпоинта в установщики.**
-   Сейчас: `cargo build` вручную на каждой ОС + два наших патча. Нужно: GitHub
-   Actions, который собирает release-бинари `tune-bridge` под macOS (arm64+x86_64),
-   Linux (x86_64+arm64), Windows и пакует в `.dmg`/`.deb`/`.msi` + brew cask.
-   Патчи (живой список устройств, control_token) уже в нашем форке — их надо
-   закрепить в репозитории и собирать из него.
+1. **CI-сборка + упаковка эндпоинта в установщики.** ✅ Готово (2026-11-06/07):
+   форк закреплён в `github.com/druner-ai/oaat` (private), GitHub Actions Release
+   собирает `tune-bridge` под macOS (arm64+x86_64), Linux (x86_64+arm64 tar.gz +
+   `.deb` amd64/arm64) и Windows (zip); `ts-controller` — в linux-артефактах.
+   Stable-алиасы `releases/latest/download/...` для установщиков. Теги `v0.2.8-ts.N`.
+   Вне скоупа осталось: `.dmg`/`.msi`/brew cask (тарболы + скрипты установки покрывают
+   «скачал и запустил»; dmg/msi — косметика подписи, дорого без Apple Dev ID).
 
-2. **Автодетект эндпоинтов (mDNS).** 🟡 Частично готово (2026-11-04, 75b32eb):
+2. **Автодетект эндпоинтов (mDNS).** ✅ Готово (2026-11-06, 21286be):
    endpoint анонсирует себя (`_oaat._tcp`), backend резолвит кандидатов
-   `mdns:NAME` с fallback на прямой адрес (`MacBook=mdns:MacBook|100.75.171.5:9740`),
-   TTL-кэш + watchdog переподключает ts-controller при смене адреса.
-   Осталось: авто-появление СОВЕРШЕННО новых устройств без записи в `.env`
-   (сейчас имя всё же нужно прописать в `OAAT_ENDPOINTS`).
-   Ограничение: Keenetic режет mDNS-multicast WiFi→Ethernet — в такой сети
+   `mdns:NAME` с fallback на прямой адрес, TTL-кэш + watchdog переподключает
+   ts-controller при смене адреса. НОВЫЕ устройства без записи в `.env`
+   появляются сами: кэш обзора `_oaat._tcp` (TTL 30с, sticky при морганиях),
+   discovered-endpoint'ы в `/api/endpoints` с флагом `auto`, выбор/активация
+   без конфига, zero-config старт (пустой `OAAT_ENDPOINTS` больше не крашит).
+   Ограничение среды: Keenetic режет mDNS-multicast WiFi→Ethernet — в такой сети
    фактически работает Tailscale-fallback.
 
-3. **Мастер первого запуска в веб-интерфейсе.**
-   Сейчас: вся конфигурация — руками в `.env` (логины, пароли, пути). Нужно: веб-форма
-   при первом входе (логин RuTracker, пароль админки, путь библиотеки), которая пишет
-   конфиг и применяет без перезапуска вручную.
+3. **Мастер первого запуска в веб-интерфейсе.** ✅ Готово (2026-11-06, c1d6376):
+   `GET /api/setup/status` (missing: rutracker/endpoint/qbittorrent) +
+   `SetupWizard.jsx` при первом входе: форма RuTracker с проверкой логина,
+   форма qBittorrent, экран эндпоинтов (живой список + ссылки на скачивание под
+   все ОС). qbt-креды и пароль админки (Basic Auth) пишутся в БД и применяются
+   БЕЗ перезапуска (env остаётся fallback). Путь библиотеки — не setting
+   (определяется save_path qbittorrent), из мастера исключён.
 
 ### P1 — usability и надёжность
 
-4. **Автозапуск endpoint'а из установщика.** LaunchAgent (macOS) / systemd-unit
-   (Linux) / autostart (Windows) — чтобы endpoint жил после перезагрузки без ручного
-   `launchctl`/`kill`.
+4. **Автозапуск endpoint'а из установщика.** ✅ Готово (2026-11-07, oaat 42a623b,
+   релиз v0.2.8-ts.2+): `.deb` — postinst `systemctl enable+start
+   oaat-endpoint.service` (prerm — stop+disable), конфиг из sample; macOS —
+   `install.sh` + LaunchAgent (RunAtLoad+KeepAlive) в tar.gz; Windows —
+   `install.ps1` (HKCU Run) в zip.
 
-5. **Безопасность «из коробки».** `control_token` генерируется автоматически при
-   первом запуске endpoint'а и пробрасывается в backend — без ручного `openssl` и
-   прописывания в два конфига. Плюс кнопка регенерации в UI.
+5. **Безопасность «из коробки».** ✅ Готово (2026-11-07, oaat 42a623b + backend
+   3b53896): `control_token` генерируется автоматически при первом запуске
+   (uuid v4, state-файл `<config>.token`, 0600), авто-токен публикуется в mDNS
+   TXT `token=` (config-токен НЕ публикуется) и подхватывается backend'ом
+   (приоритет: TXT > настройка `ep_token:<name>` > env `OAAT_CONTROL_TOKEN`).
+   Кнопка регенерации в настройках UI → `POST /api/endpoints/regenerate_token`
+   → endpoint удаляет state-файл и выходит → супервизор перезапускает с новым
+   токеном (409, если токен задан конфигом). Проверено вживую на NUC (409 для
+   config-токена).
 
-6. **Публичный доступ одним флагом.** Сейчас Tailscale + VPS B + Caddy руками. Нужно:
-   встроенный Tailscale-контейнер в compose ИЛИ готовый шаблон reverse-proxy, чтобы
-   «включить доступ извне» = переключить один параметр.
+6. **Публичный доступ одним флагом.** ✅ Готово (2026-11-07, 70ccd78):
+   compose-профиль `public` — sidecar `tailscale/tailscale` в netns backend'а;
+   включить = `TS_AUTHKEY` в `.env` + `docker compose --profile public up -d`,
+   SoundVault виден в tailnet на :8000 без проброса портов. ⚠️ Не включать на
+   хосте с уже работающим tailscaled (NUC — там доступ уже через host-tailscale
+   + Caddy на VPS B).
 
 7. **Авто-пауза при пропаже устройства.** Снял наушники / отключил DAC → плеер сам
    встаёт на паузу (детект пропажи устройства в живой список + пауза). Сейчас трек
