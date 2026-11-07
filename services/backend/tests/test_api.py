@@ -742,6 +742,41 @@ def test_catalog_groups_sort_new(tmp_path):
         assert [g["album"] for g in groups] == ["New", "Old"]
 
 
+def test_torrent_creation_date():
+    data = b"d4:infod4:name3:fooe13:creation datei1700000000ee"
+    assert main._torrent_creation_date(data) == "2023-11-14"  # 1700000000 UTC
+    assert main._torrent_creation_date(b"d4:name3:fooe") is None
+
+
+def test_catalog_groups_reg_date_sort_and_field(tmp_path):
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        with main.db() as c:
+            c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
+                          lossless,artist,album,release_key,reg_date)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (1, 2277, "X - Old (2000) FLAC", "1GB", 5, 0, 0, 1, "X", "Old",
+                       "x|old", "2010-05-01"))
+            c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
+                          lossless,artist,album,release_key,reg_date)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (2, 2277, "Y - New (2024) FLAC", "1GB", 1, 0, 0, 1, "Y", "New",
+                       "y|new", "2024-01-15"))
+            c.execute("""INSERT INTO catalog(t,forum_id,title,size,seeders,leechers,crawled_at,
+                          lossless,artist,album,release_key)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                      (3, 2277, "Z - Unknown (2020) FLAC", "1GB", 9, 0, 0, 1, "Z", "Unknown",
+                       "z|unk"))
+            c.commit()
+        r = client.get("/api/catalog/groups?sort=reg")
+        assert r.status_code == 200
+        groups = r.json()["groups"]
+        # известные даты — по убыванию, неизвестные — в конце
+        assert [g["album"] for g in groups] == ["New", "Old", "Unknown"]
+        by_t = {e["t"]: e for g in groups for e in g["editions"]}
+        assert by_t[1]["reg_date"] == "2010-05-01"
+        assert by_t[3]["reg_date"] is None
+
+
 def test_settings_save_get(tmp_path):
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
         r = client.get("/api/settings")

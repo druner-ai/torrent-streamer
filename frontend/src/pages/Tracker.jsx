@@ -521,6 +521,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
         >
           <option value="seeders">По сидам</option>
           <option value="new">По дате</option>
+          <option value="reg">По дате регистрации</option>
           <option value="year">По году</option>
           <option value="name">По исполнителю</option>
         </select>
@@ -639,6 +640,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
           {groups.map((g) => {
             const top = [...g.editions].sort((a, b) => b.seeders - a.seeders)[0] || {}
+            const regd = (g.editions || []).map((e) => e.reg_date).filter(Boolean).sort().pop()
             const tone = seedersTone(top.seeders || 0)
             return (
               <button
@@ -689,6 +691,8 @@ export default function Tracker({ notify, onAlbumAdded }) {
                     <span className={toneText[tone]}>{top.seeders || 0} сид.</span>
                     {sortMode === 'new' && g.last_post ? (
                       <span>{fmtDate(g.last_post)}</span>
+                    ) : sortMode === 'reg' && regd ? (
+                      <span>с {regd}</span>
                     ) : (
                       g.year && <span>{g.year}</span>
                     )}
@@ -775,6 +779,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
                         </span>
                         <span>{formatSize(e.size)}</span>
                         {e.year && <span>{e.year}</span>}
+                        {e.reg_date && <span title="Дата регистрации раздачи на RuTracker">рег. {e.reg_date}</span>}
                       </p>
                     </div>
                     <button

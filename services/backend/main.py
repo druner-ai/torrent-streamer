@@ -270,6 +270,7 @@ def _start_ts(target: str) -> None:
             [TS_CONTROLLER_BIN, "--target", target, "--socket", TS_CONTROLLER_SOCK],
             stdout=_TS_LOGF if _TS_LOGF and not _TS_LOGF.closed else subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
+            env={**os.environ, "RUST_LOG": os.getenv("TS_RUST_LOG", "info")},
         )
     except OSError as e:
         # нет бинаря/права — деградируем: приложение живёт, аудио недоступно.
@@ -434,7 +435,7 @@ def _schema(c):
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         hash TEXT UNIQUE, name TEXT, status TEXT, added_at INTEGER,
         artist TEXT, cover_url TEXT)""")
-    for col in ("artist", "cover_url", "release_key"):
+    for col in ("artist", "cover_url", "release_key", "reg_date"):
         with contextlib.suppress(sqlite3.OperationalError):
             c.execute(f"ALTER TABLE albums ADD COLUMN {col} TEXT")
     with contextlib.suppress(sqlite3.OperationalError):
@@ -453,7 +454,7 @@ def _schema(c):
         seeders INTEGER, leechers INTEGER, crawled_at INTEGER)""")
     for col in ("lossless INTEGER", "year TEXT", "artist TEXT", "album TEXT",
                 "format TEXT", "bitrate TEXT", "release_key TEXT", "cover_url TEXT",
-                "genre TEXT", "source TEXT", "rip TEXT", "quality TEXT"):
+                "genre TEXT", "source TEXT", "rip TEXT", "quality TEXT", "reg_date TEXT"):
         with contextlib.suppress(sqlite3.OperationalError):
             c.execute(f"ALTER TABLE catalog ADD COLUMN {col}")
     with contextlib.suppress(sqlite3.OperationalError):
@@ -1099,9 +1100,17 @@ def catalog_groups(forum_id: Annotated[list[int] | None, Query()] = None,
             "bitrate": r["bitrate"], "lossless": r["lossless"],
             "quality": r["quality"], "source": r["source"], "rip": r["rip"],
             "seeders": r["seeders"], "leechers": r["leechers"],
-            "size": r["size"], "year": r["year"], "last_post": r["last_post"] or 0})
+            "size": r["size"], "year": r["year"], "last_post": r["last_post"] or 0,
+            "reg_date": r["reg_date"]})
     if sort == "new":
         out = sorted(groups.values(), key=lambda g: -(g["last_post"] or 0))
+    elif sort == "reg":
+        # дата регистрации известна только для скачанных (.torrent) — неизвестные в конец
+        def _max_reg(g):
+            return max((e["reg_date"] or "" for e in g["editions"]), default="")
+
+        out = sorted(groups.values(), key=_max_reg, reverse=True)
+        out = sorted(out, key=lambda g: _max_reg(g) == "")  # устойчиво: неизвестные вниз
     elif sort == "year":
         out = sorted(groups.values(),
                      key=lambda g: (g["year"] or "9999",
@@ -1314,6 +1323,16 @@ def _rutracker_cookies() -> list[dict]:
     return r.json().get("solution", {}).get("cookies", [])
 
 
+def _torrent_creation_date(data: bytes) -> str | None:
+    """дата создания .torrent (bencode «creation date») → YYYY-MM-DD (UTC)."""
+    m = re.search(rb"13:creation datei(\d{9,11})e", data)
+    if not m:
+        return None
+    with contextlib.suppress(Exception):
+        return time.strftime("%Y-%m-%d", time.gmtime(int(m.group(1))))
+    return None
+
+
 @app.post("/api/catalog/download")
 def catalog_download(req: CatalogDownloadReq):
     if not (_rutracker_login() and _rutracker_password()):
@@ -1325,6 +1344,13 @@ def catalog_download(req: CatalogDownloadReq):
     r.raise_for_status()
     if r.content[:200].lstrip().startswith(b"<"):
         raise HTTPException(502, "не удалось скачать .torrent (нужна авторизация)")
+    # дата регистрации раздачи живёт в самом .torrent (bencode «creation date») —
+    # на странице листинга её нет, а тут она достаётся бесплатно
+    reg = _torrent_creation_date(r.content)
+    if reg:
+        with contextlib.suppress(Exception), db() as c:
+            c.execute("UPDATE catalog SET reg_date=? WHERE t=?", (reg, req.t))
+            c.commit()
     path = f"/tmp/rt-{req.t}.torrent"
     with open(path, "wb") as f:
         f.write(r.content)
@@ -1332,7 +1358,11 @@ def catalog_download(req: CatalogDownloadReq):
     before = {t.get("hash") for t in qb.info() if t.get("hash")}
     qb.add_file(path)
     imported = _import_torrent(qb, before, catalog_t=req.t)
-    return {"ok": True, "t": req.t, "bytes": len(r.content), **imported}
+    if reg and imported.get("album_id") is not None:
+        with contextlib.suppress(Exception), db() as c:
+            c.execute("UPDATE albums SET reg_date=? WHERE id=?", (reg, imported["album_id"]))
+            c.commit()
+    return {"ok": True, "t": req.t, "bytes": len(r.content), "reg_date": reg, **imported}
 
 
 # ---------- qbittorrent ----------
