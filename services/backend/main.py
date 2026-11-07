@@ -1402,16 +1402,27 @@ def _cover_worker():
 
 
 def _rutracker_cookies() -> list[dict]:
-    """логин RuTracker через FlareSolverr → cookies (bb_session и др.)."""
+    """логин RuTracker через FlareSolverr → cookies (bb_session и др.).
+
+    Та же сессия, что у _flaresolverr_get: cf_clearance переиспользуется и
+    challenge при логине обычно не решается вовсе. Лестница таймаутов как у
+    GET: 30с часто не хватает (решение challenge занимает 33-37с)."""
     data = ("login_username=" + urllib.parse.quote(_rutracker_login())
             + "&login_password=" + urllib.parse.quote(_rutracker_password())
             + "&login=%E2%F5%EE%E4")
-    r = requests.post(f"{FLARESOLVERR_URL}/v1",
-                      json={"cmd": "request.post", "url": f"{RUTRACKER_BASE}/login.php",
-                            "postData": data, "maxTimeout": 30000},
-                      timeout=45)
-    r.raise_for_status()
-    return r.json().get("solution", {}).get("cookies", [])
+    last: Exception | None = None
+    for mt, to in ((30000, 45), (55000, 75)):
+        try:
+            r = requests.post(f"{FLARESOLVERR_URL}/v1",
+                              json={"cmd": "request.post", "url": f"{RUTRACKER_BASE}/login.php",
+                                    "postData": data, "maxTimeout": mt,
+                                    "session": _rt_session(), "session_ttl": 1800},
+                              timeout=to)
+            r.raise_for_status()
+            return r.json().get("solution", {}).get("cookies", [])
+        except Exception as e:  # noqa: BLE001 — повторить с большим таймаутом
+            last = e
+    raise RuntimeError(f"RuTracker-логин через FlareSolverr не удался: {last}") from last
 
 
 def _torrent_creation_date(data: bytes) -> str | None:
