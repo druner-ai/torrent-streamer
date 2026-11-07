@@ -265,7 +265,10 @@ def _start_ts(target: str) -> None:
         # лог контроллера — в файл (был DEVNULL: падения/паники невозможно diagnose)
         with contextlib.suppress(OSError):
             if _TS_LOGF is None or _TS_LOGF.closed:
-                _TS_LOGF = open(TS_CONTROLLER_LOG, "ab")  # noqa: SIM115 — живет весь процесс
+                # опрос статуса даёт ~2 строки/с — разросшийся лог усекаем на старте
+                mode = ("wb" if os.path.exists(TS_CONTROLLER_LOG)
+                        and os.path.getsize(TS_CONTROLLER_LOG) > 5_000_000 else "ab")
+                _TS_LOGF = open(TS_CONTROLLER_LOG, mode)  # noqa: SIM115 — живет весь процесс
         _TS_PROC = subprocess.Popen(
             [TS_CONTROLLER_BIN, "--target", target, "--socket", TS_CONTROLLER_SOCK],
             stdout=_TS_LOGF if _TS_LOGF and not _TS_LOGF.closed else subprocess.DEVNULL,
