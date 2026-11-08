@@ -408,10 +408,13 @@ async def lifespan(_app):
         print(f"[covers] миграция тамбнейлов: {e}", flush=True)
     _cover_thread = threading.Thread(target=_cover_worker, daemon=True)
     _cover_thread.start()
-    # сервер сам виден в LAN: _soundvault._tcp для клиентов/мобильных приложений
-    _mdns_register()
+    # сервер сам виден в LAN: _soundvault._tcp для клиентов/мобильных приложений.
+    # zeroconf блокирующий — из asyncio-loop зовём только из отдельного потока.
+    threading.Thread(target=_mdns_register, daemon=True).start()
     yield
-    _mdns_unregister()
+    _t = threading.Thread(target=_mdns_unregister, daemon=True)
+    _t.start()
+    _t.join(timeout=5)
     _COVER_STOP.set()
     _stop_ts()
 
