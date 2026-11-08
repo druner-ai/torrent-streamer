@@ -1609,7 +1609,7 @@ def test_mdns_register_and_unregister(monkeypatch):
         def __init__(self):
             self.registered = []
 
-        def register_service(self, info):
+        def register_service(self, info, **kw):
             self.registered.append(info)
 
         def unregister_service(self, info):
