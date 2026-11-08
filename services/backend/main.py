@@ -369,11 +369,13 @@ def _mdns_register() -> None:
             server=f"{socket.gethostname()}.local.",
         )
         zc = Zeroconf()
-        zc.register_service(info)
+        # cooperating_responders: не падать NonUniqueNameException, если в сети
+        # ещё жив анонс предыдущего инстанса (контейнер без graceful unregister)
+        zc.register_service(info, cooperating_responders=True)
         _mdns_state.append((zc, info))
         print(f"[mdns] сервер {name} анонсируется на {ip}:{port}", flush=True)
     except Exception as e:  # noqa: BLE001 — анонс не должен ронять старт
-        print(f"[mdns] анонс сервера не удался: {e}", flush=True)
+        print(f"[mdns] анонс сервера не удался: {type(e).__name__}: {e}", flush=True)
 
 
 def _mdns_unregister() -> None:
