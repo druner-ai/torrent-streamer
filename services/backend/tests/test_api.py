@@ -399,6 +399,8 @@ def test_play_flac_converts_via_ffmpeg(tmp_path):
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(
         main, "QB"
     ) as QB, patch.object(main, "FFMPEG", "ffmpeg"), patch.object(
+        main, "_predecode"
+    ), patch.object(
         main.subprocess, "run"
     ) as run, patch.object(main, "_ts_cmd") as ts:
         c = main.db()
@@ -413,15 +415,19 @@ def test_play_flac_converts_via_ffmpeg(tmp_path):
         qb = QB.return_value
         qb.find_by_hash.return_value = {"save_path": "/downloads", "name": "Album"}
         run.return_value.returncode = 0
+        run.return_value.stdout = ""  # ffprobe probe → пусто → консервативный s16
         ts.return_value = {"ok": True, "state": "playing", "duration": 100.0}
 
         r = client.post(f"/api/albums/{aid}/play")
 
         assert r.status_code == 200
         assert r.json()["file"] == "01.flac"
-        run.assert_called_once_with(
-            ["ffmpeg", "-y", "-i", "/downloads/01.flac", "-f", "wav",
-             f"/tmp/oaat_stream_{aid}_0.wav"], check=False, capture_output=True)
+        ffmpeg_calls = [c for c in run.call_args_list if c.args and c.args[0][0] == "ffmpeg"]
+        assert len(ffmpeg_calls) == 1
+        assert ffmpeg_calls[0].args[0] == [
+            "ffmpeg", "-y", "-i", "/downloads/01.flac", "-c:a", "pcm_s16le",
+            "-f", "wav", f"/tmp/oaat_stream_{aid}_0.wav"]
+        assert ffmpeg_calls[0].kwargs == {"check": False, "capture_output": True}
         assert ts.call_args.args[0]["path"] == f"/tmp/oaat_stream_{aid}_0.wav"
     _reset_oaat_state()
 
@@ -1416,6 +1422,34 @@ def test_device_watch_pauses_when_device_gone():
         main._device_watch("playing")
         assert main._DEVICE_LOST_NAME == "USB DAC"
         pc.assert_called_once_with("pause")
+
+
+def test_device_watch_no_pause_when_device_list_empty():
+    """P1.7 fix: Linux-эндпоинт не отдаёт список устройств — авто-пауза не должна срабатывать."""
+    with patch.object(main, "_active_ep_name", return_value="nuc"), \
+         patch.object(main, "_ep_status", return_value={
+             "current_device": "plughw:CARD=PCH", "available_devices": [],
+             "connected": True, "playing": True}), \
+         patch.object(main, "player_cmd") as pc:
+        main._device_watch("playing")
+        assert main._DEVICE_LOST_NAME is None
+        pc.assert_not_called()
+
+
+def test_wav_codec_preserves_source_depth():
+    """24-битный источник → pcm_s24le (не s16 по умолчанию WAV-мульчера)."""
+    class _R:
+        def __init__(self, stdout):
+            self.stdout = stdout
+    with patch.object(main.subprocess, "run") as run:
+        run.return_value = _R(",24\n")
+        assert main._wav_codec_for("a.flac") == "pcm_s24le"
+        run.return_value = _R("N/A,16\n")
+        assert main._wav_codec_for("a.flac") == "pcm_s16le"
+        run.return_value = _R(",32\n")
+        assert main._wav_codec_for("a.dsf") == "pcm_s32le"
+        run.side_effect = OSError("no ffprobe")
+        assert main._wav_codec_for("a.flac") == "pcm_s16le"
 
 
 def test_device_watch_resumes_and_reselects_when_device_back():

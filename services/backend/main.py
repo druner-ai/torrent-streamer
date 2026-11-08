@@ -321,6 +321,34 @@ def _ep_watchdog() -> None:
             else:
                 pending = addr
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
+FFPROBE = os.getenv("FFPROBE", "ffprobe")
+
+
+def _wav_codec_for(src: str) -> str:
+    """WAV-кодек, сохраняющий глубину источника: 16→s16le, 24→s24le, 32/float→s32le.
+    Без явного -c:a WAV-мульчер ffmpeg по умолчанию pcm_s16le — 24-битные
+    источники усекались до 16 бит (бит-перфект ломался)."""
+    try:
+        out = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=bits_per_raw_sample,bits_per_sample",
+             "-of", "csv=p=0", src],
+            check=False, capture_output=True, text=True, timeout=30,
+        ).stdout
+        for p in out.strip().split(","):
+            try:
+                b = int(p)
+            except ValueError:
+                continue
+            if b == 24:
+                return "pcm_s24le"
+            if b >= 32:
+                return "pcm_s32le"
+            if b == 16:
+                return "pcm_s16le"
+    except Exception:  # noqa: BLE001, S110 — probe не удался → консервативный s16
+        pass
+    return "pcm_s16le"
 DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 API_KEY = os.getenv("API_KEY", "")
 PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696")
@@ -2290,7 +2318,9 @@ def _predecode(aid: int, idx: int, abs_path: str):
             tmp = out + ".part"
             cmd = [FFMPEG, "-y", "-i", abs_path]
             if rg_on and g is not None:
-                cmd += ["-af", f"volume={g:.2f}dB"]
+                cmd += ["-af", f"volume={g:.2f}dB", "-c:a", "pcm_s32le"]  # RG → s32 для headroom
+            else:
+                cmd += ["-c:a", _wav_codec_for(abs_path)]  # сохраняем глубину источника
             cmd += ["-f", "wav", tmp]
             conv = subprocess.run(cmd, check=False, capture_output=True)
             if conv.returncode == 0:
@@ -2357,7 +2387,9 @@ def _start_track(aid, idx, offset=0.0):
             # не успели пред-декодировать — декодируем синхронно (fallback)
             cmd = [FFMPEG, "-y", "-i", abs_path]
             if use_rg and gain is not None:
-                cmd += ["-af", f"volume={gain:.2f}dB"]
+                cmd += ["-af", f"volume={gain:.2f}dB", "-c:a", "pcm_s32le"]
+            else:
+                cmd += ["-c:a", _wav_codec_for(abs_path)]
             cmd += ["-f", "wav", stream_path]
             conv = subprocess.run(cmd, check=False, capture_output=True)
             if conv.returncode != 0:
@@ -2500,7 +2532,8 @@ def _device_watch(state: str):
     if not cur:
         return  # endpoint недоступен / старая версия — не мешаем
     if _DEVICE_LOST_NAME is None:
-        if state == "playing" and cur not in avail:
+        # avail пустой = endpoint не отдаёт список устройств (Linux/ALSA) — не авто-паузим
+        if state == "playing" and avail and cur not in avail:
             player_cmd("pause")
             _DEVICE_LOST_NAME = cur
             print(f"[player] устройство '{cur}' пропало — авто-пауза", flush=True)
