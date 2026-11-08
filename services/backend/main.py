@@ -332,6 +332,60 @@ COVER_CACHE_DIR = os.getenv("COVER_CACHE_DIR", "/data/covers")
 AUDIO_EXT = {".flac", ".mp3", ".dsf", ".dff", ".wav", ".m4a", ".aiff", ".aif", ".ape", ".ogg", ".opus", ".alac"}
 MUSICBRAINZ_UA = "torrent-streamer/0.1 (druner@gmail.com)"
 
+# ---------- mDNS-анонс сервера (_soundvault._tcp): автообнаружение клиентами в LAN ----------
+_mdns_state: list = []  # [(Zeroconf, ServiceInfo)]
+
+
+def _lan_ip() -> str:
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return "127.0.0.1"
+
+
+def _mdns_register() -> None:
+    """Анонсирует сервер как _soundvault._tcp, чтобы клиенты в LAN находили его без настроек."""
+    if os.getenv("MDNS_REGISTER", "1") != "1" or _mdns_state:
+        return
+    try:
+        import socket
+
+        from zeroconf import ServiceInfo, Zeroconf
+        name = os.getenv("MDNS_NAME", "SoundVault")
+        port = int(os.getenv("MDNS_PORT", "8000"))
+        ip = _lan_ip()
+        info = ServiceInfo(
+            "_soundvault._tcp.local.",
+            f"{name}._soundvault._tcp.local.",
+            addresses=[socket.inet_aton(ip)],
+            port=port,
+            properties={"version": VERSION, "path": "/", "host": socket.gethostname()},
+            server=f"{socket.gethostname()}.local.",
+        )
+        zc = Zeroconf()
+        zc.register_service(info)
+        _mdns_state.append((zc, info))
+        print(f"[mdns] сервер {name} анонсируется на {ip}:{port}", flush=True)
+    except Exception as e:  # noqa: BLE001 — анонс не должен ронять старт
+        print(f"[mdns] анонс сервера не удался: {e}", flush=True)
+
+
+def _mdns_unregister() -> None:
+    while _mdns_state:
+        zc, info = _mdns_state.pop()
+        try:
+            zc.unregister_service(info)
+            zc.close()
+        except Exception as e:  # noqa: BLE001
+            print(f"[mdns] снятие анонса: {e}", flush=True)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_app):
     # ts-controller стартует с активным endpoint'ом (persist в /data/active_endpoint);
@@ -352,7 +406,10 @@ async def lifespan(_app):
         print(f"[covers] миграция тамбнейлов: {e}", flush=True)
     _cover_thread = threading.Thread(target=_cover_worker, daemon=True)
     _cover_thread.start()
+    # сервер сам виден в LAN: _soundvault._tcp для клиентов/мобильных приложений
+    _mdns_register()
     yield
+    _mdns_unregister()
     _COVER_STOP.set()
     _stop_ts()
 

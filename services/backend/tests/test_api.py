@@ -1591,3 +1591,42 @@ def test_ts_cmd_missing_socket_human_error(monkeypatch):
     assert resp["ok"] is False
     assert "нет связи с endpoint" in resp["error"]
     assert "Errno" not in resp["error"]
+
+
+def test_mdns_register_disabled(monkeypatch):
+    monkeypatch.setenv("MDNS_REGISTER", "0")
+    monkeypatch.setattr(main, "_mdns_state", [])
+    main._mdns_register()
+    assert main._mdns_state == []
+
+
+def test_mdns_register_and_unregister(monkeypatch):
+    import types
+
+    fake = types.ModuleType("zeroconf")
+
+    class FakeZC:
+        def __init__(self):
+            self.registered = []
+
+        def register_service(self, info):
+            self.registered.append(info)
+
+        def unregister_service(self, info):
+            self.registered.remove(info)
+
+        def close(self):
+            pass
+
+    fake.Zeroconf = FakeZC
+    fake.ServiceInfo = lambda *a, **k: types.SimpleNamespace(type=a[0], name=a[1])
+    monkeypatch.setitem(sys.modules, "zeroconf", fake)
+    monkeypatch.setenv("MDNS_REGISTER", "1")
+    monkeypatch.setattr(main, "_mdns_state", [])
+    main._mdns_register()
+    assert len(main._mdns_state) == 1
+    assert main._mdns_state[0][1].type == "_soundvault._tcp.local."
+    main._mdns_register()  # идемпотентно: второй анонс не создаётся
+    assert len(main._mdns_state) == 1
+    main._mdns_unregister()
+    assert main._mdns_state == []
