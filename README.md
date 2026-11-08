@@ -1,54 +1,98 @@
-# torrent-streamer
+# SoundVault (torrent-streamer)
 
-Self-hosted аудио-стример: подаёшь ссылку на торрент-сайт / magnet / название альбома →
-получаешь постоянную библиотеку → играешь и управляешь. Устройство играет само (MPD → USB-DAC → система).
+Self-hosted музыкальный сервер: витрина раздач RuTracker → скачивание через qBittorrent →
+постоянная библиотека → bit-perfect воспроизведение на аудио-эндпоинты в вашей сети.
+Веб-интерфейс (PWA) работает с телефона и десктопа.
 
-## Архитектура
+*English: a self-hosted music server — browse a RuTracker showcase, download via qBittorrent
+into a persistent library, and play bit-perfectly to OAAT audio endpoints discovered over mDNS.*
+
+## Как это устроено
+
 ```
-ВХОД: ссылка / magnet / название
-  → Prowlarr (индексаторы)
-  → Парсер метаданных (MusicBrainz/Discogs)
-  → Каталог (SQLite, постоянная библиотека)
-  → qbittorrent-nox (sequential download) → файлы на диске
-  → MPD (bit-perfect) → ALSA → USB-DAC → система
-УПРАВЛЕНИЕ: веб-UI, доступ через Tailscale
+┌──────────── Сервер (этот репозиторий, Docker) ────────────┐
+│  Веб-UI (React, PWA)  ←→  Backend (FastAPI, SQLite)       │
+│    · витрина RuTracker (каталог, фильтры, «✓ в библиотеке»)│
+│    · библиотека альбомов, плейлисты, история, ReplayGain   │
+│    · qBittorrent: автодокачка, приоритизация файлов        │
+└──────────────┬────────────────────────────────────────────┘
+               │ UDP + FEC, PTP-подобная синхронизация (OAAT)
+       ┌───────┴────────┐
+       ▼                ▼
+  Эндпоинт A        Эндпоинт B        ← любые машины с ЦАП:
+  (macOS/Linux/     (Linux/Windows)     macOS, Linux, Windows,
+   Windows)                             Raspberry Pi
 ```
 
-## Компоненты
-| Слой | Технология | Где |
-|---|---|---|
-| Индексация | Prowlarr | Docker (этап 1) |
-| Downloader | qbittorrent-nox | хост (sequential, работает за CGNAT) |
-| Плеер | MPD | хост (ALSA/USB-DAC) |
-| Бэкенд | FastAPI | Docker (этап 1) |
-| Веб-UI | — | Docker (этап 1) |
+- **Сервер** — каталог, библиотека и плеер-логика. Работает в Docker (хост: Linux/NUC/RPi/NAS,
+  позже — нативные сборки).
+- **Эндпоинты** — лёгкие нативные приложения (`tune-bridge`, репозиторий `oaat`): принимают
+  аудио-поток и выводят его на ЦАП. Мастер-часы — ЦАП (pull-модель), сеть подстраивается
+  PTS-серво; бит-перфект при аппаратной громкости.
+- **Обнаружение** — эндпоинты анонсируются по mDNS (`_oaat._tcp`) и находятся сервером сами;
+  ключи управления передаются в TXT-записях. Ручная настройка не требуется.
+- **Загрузка** — qBittorrent на хосте (sequential, отлично работает за CGNAT).
 
-## Почему не TorrServer
-TorrServer/MatriX за CGNAT подключает 1–4 пира из 500 и не качает данные (проверено эмпирически).
-qbittorrent-nox на том же NUC качает 18 MiB/s (10 сидов). CGNAT не блокирует торренты — блокирует TorrServer.
+## Быстрый старт
 
-## Установка
+Предварительно: Docker + qBittorrent-nox на хосте (WebUI на 8080).
+
 ```bash
-./scripts/install.sh   # Docker + MPD + qbittorrent-nox + audio group + папки
-docker compose up -d
+git clone https://github.com/druner-ai/torrent-streamer.git
+cd torrent-streamer
+cp .env.example .env      # заполнить QBT_PASS, DOWNLOADS_DIR, FRONTEND_AUTH
+docker compose up -d --build
 ```
 
-## API
-Защита опциональна: если задан env `API_KEY`, все эндпоинты `/api/*` (кроме `/api/health`) требуют заголовок `X-API-Key: <API_KEY>`.
+Откройте `http://<хост>:8000`. При первом запуске мастер настройки проведёт по шагам:
+подключение к qBittorrent, логин трекера, выбор аудио-эндпоинта.
 
-| Метод | Эндпоинт | Описание |
+Переменные окружения — см. `.env.example` (все опциональны, кроме qBittorrent).
+
+## Эндпоинты (звук)
+
+Скачайте `tune-bridge` для своей платформы из релизов
+[druner-ai/oaat](https://github.com/druner-ai/oaat/releases) и запустите установщик:
+
+| Платформа | Артефакт | Установка |
 |---|---|---|
-| POST | `/api/add` | Принимает `{ "link": ... }` (magnet/URL), добавляет торрент и создаёт альбом в каталоге. |
-| GET | `/api/albums` | Список альбомов со статусом, прогрессом, количеством треков, исполнителем и обложкой. |
-| GET | `/api/albums/{id}` | Альбом по `id` со списком треков. |
-| DELETE | `/api/albums/{id}?remove_torrent=` | Удаляет альбом из каталога; `remove_torrent=true` также удаляет торрент из qBittorrent. |
-| POST | `/api/albums/{id}/play` | Очищает очередь MPD и запускает все треки альбома. |
-| GET | `/api/albums/{id}/files` | Список файлов альбома с готовностью и прогрессом скачивания. |
-| GET | `/api/player` | Текущее состояние MPD: state, song, elapsed, duration, volume. |
-| POST | `/api/player/{cmd}` | Команда плееру: `play`, `pause`, `next`, `prev`, `stop`, `vol<число>`. |
-| GET | `/api/health` | Статус сервиса и MPD; всегда 200, доступен без API-ключа. |
+| macOS (Apple Silicon / Intel) | `.tar.gz` | `install.sh` → LaunchAgent (автозапуск) |
+| Linux x86_64 / arm64 | `.deb` или `.tar.gz` | dpkg → systemd-юнит; tar — вручную |
+| Windows x64 | `.zip` | `install.ps1` (HKCU autostart) |
 
-## Этапы
-- [x] Этап 0 — MPD + qbittorrent-nox (база, проверено: 18 MiB/s за CGNAT, MPD играет FLAC HTTP-поток)
-- [ ] Этап 1 — Prowlarr + бэкенд + веб-UI
-- [ ] Этап 2 — закачка целиком для DSD/SACD, интеграция с Navidrome
+Эндпоинт сам объявится в сети по mDNS и появится в «Настройки → Эндпоинты» сервера.
+Обновления — кнопкой OTA в веб-интерфейсе.
+
+Публичный доступ из интернета (опционально): укажите `TS_AUTHKEY` (ключ Tailscale) в `.env`
+и запустите `docker compose --profile public up -d` — Tailscale-sidecar поднимет сервер
+в вашем tailnet без проброса портов.
+
+## Возможности
+
+- Витрина RuTracker: каталог 180k+ релизов, дерево разделов, фильтры, «Новое», обложки,
+  отметка «уже в библиотеке».
+- Библиотека: альбомы/треки в SQLite, фоновая автодокачка, приоритизация нужных файлов,
+  гигиена каталога (purge мёртвых раздач).
+- Плеер: очередь, автопереход, shuffle/repeat, плейлисты, история, ReplayGain,
+  Media Session/PWA, хоткеи, переключение эндпоинтов на лету.
+- Эксплуатация: HTTP Basic Auth, мастер первого запуска, mDNS-автообнаружение,
+  OTA-обновление эндпоинтов, человеческие сообщения об ошибках.
+
+## Разработка
+
+```bash
+cd services/backend
+python -m pytest tests/ -q     # 97+ тестов
+ruff check .
+```
+
+Backend: FastAPI + SQLite; frontend: React + Vite + Tailwind (собирается внутри
+multi-stage Docker-образа). Роадмап — `docs/CLIENT_JOURNEY.md`.
+
+## Лицензия
+
+Apache-2.0 (см. [LICENSE](LICENSE)). Аудио-транспорт — форк
+[oaat](https://github.com/druner-ai/oaat) (Apache-2.0).
+
+Проект предназначен для личного использования. Ответственность за соблюдение
+законодательства об авторском праве несёт пользователь.

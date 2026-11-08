@@ -39,7 +39,7 @@ QBT_USER = os.getenv("QBT_USER", "admin")
 QBT_PASS = os.getenv("QBT_PASS", "")
 MPD_HOST = os.getenv("MPD_HOST", "127.0.0.1")
 MPD_PORT = int(os.getenv("MPD_PORT", "6600"))
-OAAT_TARGET = os.getenv("OAAT_TARGET", "192.168.31.215:9740")
+OAAT_TARGET = os.getenv("OAAT_TARGET", "")
 TS_CONTROLLER_SOCK = os.getenv("TS_CONTROLLER_SOCK", "/tmp/ts-controller.sock")
 TS_CONTROLLER_BIN = os.getenv("TS_CONTROLLER_BIN", "ts-controller")
 TS_CONTROLLER_LOG = os.getenv("TS_CONTROLLER_LOG", "/tmp/ts-controller.log")
@@ -48,7 +48,7 @@ TS_CONTROLLER_LOG = os.getenv("TS_CONTROLLER_LOG", "/tmp/ts-controller.log")
 # ---------- мульти-эндпоинт: имя=кандидаты через запятую, кандидаты через | ----------
 # Кандидат: "host:port" (прямой адрес) или "mdns:SUBSTR" (поиск _oaat._tcp по подстроке имени).
 # Порядок кандидатов = приоритет: mDNS (LAN, дома) важнее прямого Tailscale-адреса (дорога).
-# Пример: OAAT_ENDPOINTS=MacBook=mdns:MacBook|100.75.171.5:9740,NUC=127.0.0.1:9740
+# Пример: OAAT_ENDPOINTS=Desk=mdns:Desk|192.0.2.7:9740,Server=127.0.0.1:9740
 def _parse_endpoints(raw: str) -> dict:
     eps = {}
     for part in raw.split(","):
@@ -157,8 +157,9 @@ def _mdns_lookup(substr: str, timeout: float = 3.0, force: bool = False) -> str 
 
 
 OAAT_ENDPOINTS = _parse_endpoints(os.getenv("OAAT_ENDPOINTS", ""))
-if not OAAT_ENDPOINTS:
-    OAAT_ENDPOINTS = {"MacBook": [OAAT_TARGET]}
+if not OAAT_ENDPOINTS and OAAT_TARGET:
+    # legacy: один прямой адрес → единственный эндпоинт; иначе полагаемся на mDNS-автообнаружение
+    OAAT_ENDPOINTS = {"Endpoint": [OAAT_TARGET]}
 ACTIVE_EP_FILE = os.getenv("ACTIVE_EP_FILE", "/data/active_endpoint")
 OAAT_CONTROL_TOKEN = os.getenv("OAAT_CONTROL_TOKEN", "")
 # Виртуальные/ненужные аудиоустройства, которые прячем из списка (подстроки через запятую).

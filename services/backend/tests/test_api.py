@@ -852,7 +852,7 @@ def test_setup_status_configured(tmp_path):
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), \
             patch.object(main, "RUTRACKER_LOGIN", "u"), \
             patch.object(main, "RUTRACKER_PASSWORD", "p"), \
-            patch.object(main, "OAAT_ENDPOINTS", {"NUC": ["127.0.0.1:9740"]}), \
+            patch.object(main, "OAAT_ENDPOINTS", {"Server": ["127.0.0.1:9740"]}), \
             patch.object(main, "QB", _QB):
         body = client.get("/api/setup/status").json()
         assert body == {"configured": True, "missing": []}
@@ -882,34 +882,34 @@ def test_catalog_tree_save_get(tmp_path):
 
 def test_parse_endpoints_multiple_candidates():
     eps = main._parse_endpoints(
-        "MacBook=mdns:MacBook|100.75.171.5:9740,NUC=127.0.0.1:9740")
-    assert eps["MacBook"] == ["mdns:MacBook", "100.75.171.5:9740"]
-    assert eps["NUC"] == ["127.0.0.1:9740"]
+        "Desk=mdns:Desk|203.0.113.7:9740,Server=127.0.0.1:9740")
+    assert eps["Desk"] == ["mdns:Desk", "203.0.113.7:9740"]
+    assert eps["Server"] == ["127.0.0.1:9740"]
 
 
 def test_resolve_ep_falls_back_to_direct_when_mdns_empty():
     with patch.object(main, "OAAT_ENDPOINTS",
-                      {"MacBook": ["mdns:MacBook", "100.75.171.5:9740"]}), \
+                      {"Desk": ["mdns:Desk", "203.0.113.7:9740"]}), \
             patch.object(main, "_mdns_lookup", return_value=None):
-        assert main._resolve_ep("MacBook") == "100.75.171.5:9740"
+        assert main._resolve_ep("Desk") == "203.0.113.7:9740"
 
 
 def test_resolve_ep_prefers_mdns_over_direct():
     with patch.object(main, "OAAT_ENDPOINTS",
-                      {"MacBook": ["mdns:MacBook", "100.75.171.5:9740"]}), \
-            patch.object(main, "_mdns_lookup", return_value="192.168.31.215:9740"):
-        assert main._resolve_ep("MacBook") == "192.168.31.215:9740"
+                      {"Desk": ["mdns:Desk", "203.0.113.7:9740"]}), \
+            patch.object(main, "_mdns_lookup", return_value="192.0.2.15:9740"):
+        assert main._resolve_ep("Desk") == "192.0.2.15:9740"
 
 
 def test_ep_addr_caches_mdns_result():
     with patch.object(main, "OAAT_ENDPOINTS",
-                      {"MacBook": ["mdns:MacBook", "100.75.171.5:9740"]}), \
+                      {"Desk": ["mdns:Desk", "203.0.113.7:9740"]}), \
             patch.object(main, "_mdns_lookup",
-                         return_value="192.168.31.215:9740") as mdns:
+                         return_value="192.0.2.15:9740") as mdns:
         main._EP_ADDR_CACHE.clear()
-        a = main._ep_addr("MacBook")
-        b = main._ep_addr("MacBook")  # второй вызов из TTL-кэша, mDNS не зовётся
-        assert a == b == "192.168.31.215:9740"
+        a = main._ep_addr("Desk")
+        b = main._ep_addr("Desk")  # второй вызов из TTL-кэша, mDNS не зовётся
+        assert a == b == "192.0.2.15:9740"
         assert mdns.call_count == 1
 
 
@@ -917,21 +917,21 @@ def test_ep_addr_caches_mdns_result():
 
 def test_mdns_services_caches_browse():
     with patch.object(main, "_mdns_browse",
-                      return_value=({"Pi DAC": "192.168.31.50:9740"},
+                      return_value=({"Pi DAC": "192.0.2.50:9740"},
                                     {"Pi DAC": "txt-token"})) as browse:
         main._MDNS_SERVICES = {}
         main._MDNS_TOKENS = {}
         main._MDNS_TS = 0.0
         a = main._mdns_services()
         b = main._mdns_services()  # в пределах TTL — второй browse не зовётся
-        assert a == b == {"Pi DAC": "192.168.31.50:9740"}
+        assert a == b == {"Pi DAC": "192.0.2.50:9740"}
         assert browse.call_count == 1
         assert main._mdns_token("Pi DAC") == "txt-token"
         # пустой browse НЕ стирает кэш сразу (защита от морганий mDNS):
         # TTL истёк, но 3*TTL ещё нет
         browse.return_value = ({}, {})
         main._MDNS_TS = main.time.monotonic() - main._MDNS_TTL - 1
-        assert main._mdns_services() == {"Pi DAC": "192.168.31.50:9740"}
+        assert main._mdns_services() == {"Pi DAC": "192.0.2.50:9740"}
     main._MDNS_SERVICES = {}
     main._MDNS_TOKENS = {}
     main._MDNS_TS = 0.0
@@ -940,47 +940,47 @@ def test_mdns_services_caches_browse():
 def test_resolve_ep_discovered_without_env():
     with patch.object(main, "OAAT_ENDPOINTS", {}), \
             patch.object(main, "_mdns_services",
-                         return_value={"Pi DAC": "192.168.31.50:9740"}):
-        assert main._resolve_ep("Pi DAC") == "192.168.31.50:9740"
+                         return_value={"Pi DAC": "192.0.2.50:9740"}):
+        assert main._resolve_ep("Pi DAC") == "192.0.2.50:9740"
         assert main._resolve_ep("Неизвестный") is None
 
 
 def test_endpoints_includes_discovered():
     main._EP_ADDR_CACHE.clear()
-    with patch.object(main, "OAAT_ENDPOINTS", {"NUC": ["127.0.0.1:9740"]}), \
+    with patch.object(main, "OAAT_ENDPOINTS", {"Server": ["127.0.0.1:9740"]}), \
             patch.object(main, "_mdns_services",
-                         return_value={"Pi DAC": "192.168.31.50:9740"}), \
+                         return_value={"Pi DAC": "192.0.2.50:9740"}), \
             patch.object(main, "_ep_status", return_value={"available_devices": [],
                                                            "current_device": None,
                                                            "connected": False,
                                                            "playing": False}):
         body = client.get("/api/endpoints").json()
         by_name = {e["name"]: e for e in body["endpoints"]}
-        assert "NUC" in by_name and "Pi DAC" in by_name
-        assert by_name["NUC"]["auto"] is False
+        assert "Server" in by_name and "Pi DAC" in by_name
+        assert by_name["Server"]["auto"] is False
         assert by_name["Pi DAC"]["auto"] is True
-        assert by_name["Pi DAC"]["control"] == "192.168.31.50:9740"
+        assert by_name["Pi DAC"]["control"] == "192.0.2.50:9740"
     main._EP_ADDR_CACHE.clear()
 
 
 def test_select_discovered_endpoint(tmp_path):
     main._EP_ADDR_CACHE.clear()
-    with patch.object(main, "OAAT_ENDPOINTS", {"NUC": ["127.0.0.1:9740"]}), \
+    with patch.object(main, "OAAT_ENDPOINTS", {"Server": ["127.0.0.1:9740"]}), \
             patch.object(main, "_mdns_services",
-                         return_value={"Pi DAC": "192.168.31.50:9740"}), \
+                         return_value={"Pi DAC": "192.0.2.50:9740"}), \
             patch.object(main, "ACTIVE_EP_FILE", str(tmp_path / "active_ep")), \
             patch.object(main, "_start_ts") as start_ts:
         r = client.post("/api/endpoints/select", json={"endpoint": "Pi DAC"})
         assert r.status_code == 200
         assert r.json()["active"] == "Pi DAC"
-        start_ts.assert_called_once_with("192.168.31.50:9740")
+        start_ts.assert_called_once_with("192.0.2.50:9740")
         assert (tmp_path / "active_ep").read_text() == "Pi DAC"
     main._EP_ADDR_CACHE.clear()
 
 
 def test_mdns_token_falls_back_to_setting(tmp_path):
     with patch.object(main, "_mdns_services",
-                      return_value={"Pi DAC": "192.168.31.50:9740"}), \
+                      return_value={"Pi DAC": "192.0.2.50:9740"}), \
             patch.object(main, "_MDNS_TOKENS", {}), \
             patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
         assert main._mdns_token("Pi DAC") is None
@@ -1003,25 +1003,25 @@ def test_ep_headers_prefers_per_endpoint_token():
 def test_regenerate_token_proxy():
     resp = Mock(status_code=200)
     with patch.object(main, "_mdns_services",
-                      return_value={"Pi DAC": "192.168.31.50:9740"}), \
+                      return_value={"Pi DAC": "192.0.2.50:9740"}), \
             patch.object(main, "OAAT_ENDPOINTS", {}), \
-            patch.object(main, "_ep_addr", return_value="192.168.31.50:9740"), \
-            patch.object(main, "_ep_web", return_value="http://192.168.31.50:9741"), \
+            patch.object(main, "_ep_addr", return_value="192.0.2.50:9740"), \
+            patch.object(main, "_ep_web", return_value="http://192.0.2.50:9741"), \
             patch.object(main, "_ep_headers", return_value={}), \
             patch.object(main.threading, "Thread"), \
             patch.object(main.requests, "post", return_value=resp) as rp:
         r = client.post("/api/endpoints/regenerate_token", json={"endpoint": "Pi DAC"})
         assert r.status_code == 200 and r.json()["ok"] is True
-        assert rp.call_args[0][0] == "http://192.168.31.50:9741/api/token/regenerate"
+        assert rp.call_args[0][0] == "http://192.0.2.50:9741/api/token/regenerate"
 
 
 def test_regenerate_token_conflict_when_config_token():
     resp = Mock(status_code=409)
     with patch.object(main, "_mdns_services",
-                      return_value={"Pi DAC": "192.168.31.50:9740"}), \
+                      return_value={"Pi DAC": "192.0.2.50:9740"}), \
             patch.object(main, "OAAT_ENDPOINTS", {}), \
-            patch.object(main, "_ep_addr", return_value="192.168.31.50:9740"), \
-            patch.object(main, "_ep_web", return_value="http://192.168.31.50:9741"), \
+            patch.object(main, "_ep_addr", return_value="192.0.2.50:9740"), \
+            patch.object(main, "_ep_web", return_value="http://192.0.2.50:9741"), \
             patch.object(main, "_ep_headers", return_value={}), \
             patch.object(main.requests, "post", return_value=resp):
         r = client.post("/api/endpoints/regenerate_token", json={"endpoint": "Pi DAC"})

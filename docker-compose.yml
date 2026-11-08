@@ -39,8 +39,8 @@ services:
       - MPD_HOST=127.0.0.1
       - MPD_PORT=6600
       - DB_PATH=/data/catalog.db
-      - OAAT_TARGET=${OAAT_TARGET:-192.168.31.215:9740}
-      - OAAT_ENDPOINTS=${OAAT_ENDPOINTS:-MacBook=mdns:MacBook|100.75.171.5:9740,NUC=127.0.0.1:9740}
+      - OAAT_TARGET=${OAAT_TARGET:-}
+      - OAAT_ENDPOINTS=${OAAT_ENDPOINTS:-}
       - OAAT_CONTROL_TOKEN=${OAAT_CONTROL_TOKEN:-}
       - TS_CONTROLLER_SOCK=/tmp/ts-controller.sock
       - PROWLARR_URL=${PROWLARR_URL:-http://127.0.0.1:9696}
@@ -52,8 +52,10 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
     volumes:
       - ./data:/data
-      - /home/nuc/oaat/target/release/ts-controller:/usr/local/bin/ts-controller:ro
-      - /home/nuc/torrent-streamer/data/qbt/qBittorrent/downloads:/home/nuc/torrent-streamer/data/qbt/qBittorrent/downloads:ro
+      # Каталог загрузок qBittorrent: пробрасывается ТЕМ ЖЕ путём, что и на хосте —
+      # backend берёт абсолютные пути файлов прямо из qbt API.
+      # Задайте DOWNLOADS_DIR в .env (напр. /srv/torrents/downloads).
+      - ${DOWNLOADS_DIR:-./downloads}:${DOWNLOADS_DIR:-./downloads}:ro
 
   # P1.6: публичный доступ одним флагом — Tailscale-sidecar (профиль "public").
   # Включить: TS_AUTHKEY=*** в .env и `docker compose --profile public up -d`.
