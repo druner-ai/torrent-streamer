@@ -467,6 +467,7 @@ _QUEUE_POS = -1      # позиция текущего трека в очере�
 _REPEAT = "off"      # off | all | one — режим повтора очереди
 _SHUFFLE = False     # перемешанный порядок очереди
 _DEVICE_LOST_NAME = None  # P1.7: имя выходного устройства, пропажа которого авто-паузит
+_DEVICE_BASELINE = None  # P1.7: (endpoint, device) — device, ранее виденный в available_devices
 _SLEEP_TIMER = None  # таймер сна (threading.Timer или None)
 _SLEEP_MINUTES = None  # установленное значение таймера — отдаётся в GET /api/player
 
@@ -2516,27 +2517,42 @@ def _device_watch(state: str):
     """P1.7: пропало выходное устройство (снял наушники / отключил DAC) → авто-пауза.
 
     Устройство вернулось → переселект на нём (endpoint мог отвалиться в default)
-    и resume с той же позиции. Вызывается из _player_monitor раз в ~3с."""
-    global _DEVICE_LOST_NAME
+    и resume с той же позиции. Вызывается из _player_monitor раз в ~3с.
+
+    Важен baseline: на Linux-эндпоинтах current_device — метка драйвера
+    («alsa-direct»), которой никогда нет в available_devices (там ALSA-карты).
+    Пропажей считаем только устройство, которое РАНЬШЕ наблюдалось в списке
+    этого же endpoint'а (семантика macOS/CoreAudio)."""
+    global _DEVICE_LOST_NAME, _DEVICE_BASELINE
     if state == "stop" or (state == "playing" and _DEVICE_LOST_NAME):
         # stop — сессия кончилась; playing при потерянном — пользователь возобновил
         # вручную, не мешаем
         _DEVICE_LOST_NAME = None
+        if state == "stop":
+            _DEVICE_BASELINE = None
         return
     ep = _active_ep_name()
     if ep is None:
         return
+    if _DEVICE_BASELINE and _DEVICE_BASELINE[0] != ep:
+        _DEVICE_BASELINE = None  # сменился endpoint — старый baseline недействителен
     st = _ep_status(ep)
     cur = st.get("current_device") or ""
     avail = st.get("available_devices") or []
-    if not cur:
-        return  # endpoint недоступен / старая версия — не мешаем
+    if not cur or not avail:
+        return  # endpoint недоступен / старая версия / не отдаёт список — не мешаем
     if _DEVICE_LOST_NAME is None:
-        # avail пустой = endpoint не отдаёт список устройств (Linux/ALSA) — не авто-паузим
-        if state == "playing" and avail and cur not in avail:
+        if state != "playing":
+            return
+        if cur in avail:
+            _DEVICE_BASELINE = (ep, cur)
+            return
+        # cur не в списке: потеря — только если baseline этого endpoint'а исчез
+        if _DEVICE_BASELINE and _DEVICE_BASELINE[1] not in avail:
             player_cmd("pause")
-            _DEVICE_LOST_NAME = cur
-            print(f"[player] устройство '{cur}' пропало — авто-пауза", flush=True)
+            _DEVICE_LOST_NAME = _DEVICE_BASELINE[1]
+            print(f"[player] устройство '{_DEVICE_LOST_NAME}' пропало — авто-пауза",
+                  flush=True)
     elif state == "paused" and _DEVICE_LOST_NAME in avail:
         try:
             if st.get("current_device") != _DEVICE_LOST_NAME:

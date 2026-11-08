@@ -27,9 +27,11 @@ def _clear_groups_cache():
     """кэш /api/catalog/groups не должен протекать между тестами (разные tmp БД)."""
     main._GROUPS_CACHE.clear()
     main._DEVICE_LOST_NAME = None
+    main._DEVICE_BASELINE = None
     yield
     main._GROUPS_CACHE.clear()
     main._DEVICE_LOST_NAME = None
+    main._DEVICE_BASELINE = None
 
 
 def test_albums_empty_when_no_albums_and_no_torrents():
@@ -1413,15 +1415,60 @@ def test_groups_cache_hit_and_clear(tmp_path):
 
 
 def test_device_watch_pauses_when_device_gone():
-    """P1.7: текущее устройство пропало из списка → авто-пауза."""
+    """P1.7: устройство, бывшее в списке, пропало из него → авто-пауза (baseline)."""
     with patch.object(main, "_active_ep_name", return_value="mac"), \
-         patch.object(main, "_ep_status", return_value={
-             "current_device": "USB DAC", "available_devices": ["Speakers"],
-             "connected": True, "playing": True}), \
+         patch.object(main, "_ep_status") as eps, \
          patch.object(main, "player_cmd") as pc:
+        # 1-й тик: устройство на месте — запоминается baseline
+        eps.return_value = {"current_device": "USB DAC",
+                            "available_devices": ["USB DAC", "Speakers"],
+                            "connected": True, "playing": True}
+        main._device_watch("playing")
+        pc.assert_not_called()
+        assert main._DEVICE_BASELINE == ("mac", "USB DAC")
+        # 2-й тик: устройство пропало из списка → авто-пауза
+        eps.return_value = {"current_device": "USB DAC",
+                            "available_devices": ["Speakers"],
+                            "connected": True, "playing": True}
         main._device_watch("playing")
         assert main._DEVICE_LOST_NAME == "USB DAC"
         pc.assert_called_once_with("pause")
+
+
+def test_device_watch_linux_mismatch_never_pauses():
+    """P1.7 fix: Linux — current_device это метка драйвера, её нет в списке карт;
+    без baseline (устройство никогда не совпадало) авто-пауза не срабатывает."""
+    with patch.object(main, "_active_ep_name", return_value="nuc"), \
+         patch.object(main, "_ep_status", return_value={
+             "current_device": "alsa-direct",
+             "available_devices": ["card 0: PCH, device 0: ALC256 Analog"],
+             "connected": True, "playing": True}), \
+         patch.object(main, "player_cmd") as pc:
+        for _ in range(5):
+            main._device_watch("playing")
+        assert main._DEVICE_LOST_NAME is None
+        assert main._DEVICE_BASELINE is None
+        pc.assert_not_called()
+
+
+def test_device_watch_baseline_resets_on_endpoint_switch():
+    """P1.7: после смены endpoint старый baseline не должен вызывать авто-паузу."""
+    with patch.object(main, "_active_ep_name", return_value="mac"), \
+         patch.object(main, "_ep_status", return_value={
+             "current_device": "USB DAC", "available_devices": ["USB DAC"],
+             "connected": True, "playing": True}):
+        main._device_watch("playing")
+        assert main._DEVICE_BASELINE == ("mac", "USB DAC")
+    with patch.object(main, "_active_ep_name", return_value="nuc"), \
+         patch.object(main, "_ep_status", return_value={
+             "current_device": "alsa-direct",
+             "available_devices": ["card 0: PCH, device 0: ALC256 Analog"],
+             "connected": True, "playing": True}), \
+         patch.object(main, "player_cmd") as pc:
+        main._device_watch("playing")
+        assert main._DEVICE_BASELINE is None
+        assert main._DEVICE_LOST_NAME is None
+        pc.assert_not_called()
 
 
 def test_device_watch_no_pause_when_device_list_empty():
