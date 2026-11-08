@@ -120,12 +120,24 @@ def test_health_ok_when_mpd_available():
         assert r.json()["status"] == "ok"
 
 
-def test_health_degraded_when_mpd_fails():
+def test_health_ok_when_mpd_fails():
+    # mpd — legacy/опциональный компонент: его недоступность не портит статус ядра
     with patch.object(main, "mpd_cmd") as mpd_cmd:
         mpd_cmd.side_effect = Exception("mpd unavailable")
         r = client.get("/api/health")
         assert r.status_code == 200
-        assert r.json()["status"] == "degraded"
+        assert r.json()["status"] == "ok"
+        assert r.json()["mpd"] == "unavailable"
+
+
+def test_albums_survive_qbt_down():
+    # qbt недоступен → библиотека всё равно отдаётся (без live-прогресса)
+    def _boom():
+        raise HTTPException(503, "qbt down")
+    with patch.object(main, "QB", _boom):
+        r = client.get("/api/albums")
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
 
 
 def test_add_rejects_when_no_audio_files():

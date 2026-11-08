@@ -476,11 +476,17 @@ async def basic_auth_middleware(request, call_next):
 # ---------- health ----------
 @app.get("/api/health")
 def health():
+    # статус — по ядру (БД); mpd/qbt — опциональные компоненты, не роняют health
+    try:
+        db().execute("SELECT 1").fetchone()
+        status = "ok"
+    except Exception:  # noqa: BLE001 — health всегда отдаёт 200
+        status = "error"
     try:
         mpd_cmd(lambda mc: mc.status())
-        status, mpd = "ok", "ok"
-    except Exception:  # noqa: BLE001 — health всегда отдаёт 200
-        status, mpd = "degraded", "error"
+        mpd = "ok"
+    except Exception:  # noqa: BLE001
+        mpd = "unavailable"
     return {"status": status, "version": VERSION, "mpd": mpd}
 
 
@@ -1537,8 +1543,16 @@ class QB:
         self._login()
 
     def _login(self):
-        self.s.post(f"{_qbt_url()}/api/v2/auth/login",
-                    data={"username": _qbt_user(), "password": _qbt_pass()})
+        try:
+            self.s.post(f"{_qbt_url()}/api/v2/auth/login",
+                        data={"username": _qbt_user(), "password": _qbt_pass()},
+                        timeout=5)
+        except requests.RequestException as e:
+            raise HTTPException(
+                503,
+                f"qBittorrent недоступен ({_qbt_url()}) — проверьте, что он запущен, "
+                "или укажите подключение в Настройках",
+            ) from e
 
     def add(self, link: str):
         r = self.s.post(f"{_qbt_url()}/api/v2/torrents/add",
@@ -1852,10 +1866,18 @@ def albums():
     rows = c.execute("""SELECT a.*, COUNT(t.id) n FROM albums a
                         LEFT JOIN tracks t ON t.album_id=a.id GROUP BY a.id ORDER BY a.id DESC""").fetchall()
     out = []
-    qb = QB()
+    try:
+        qb = QB()
+    except HTTPException:
+        qb = None  # qbt недоступен — библиотека отдаётся без live-прогресса
     favs = {row["album_id"] for row in c.execute("SELECT album_id FROM favorites")}
     for r in rows:
-        info = qb.find_by_hash(r["hash"])
+        info = None
+        if qb is not None:
+            try:
+                info = qb.find_by_hash(r["hash"])
+            except requests.RequestException:
+                qb = None  # qbt отвалился посреди цикла — не роняем выдачу
         status = _torrent_state(info["state"]) if info else (r["status"] or "downloading")
         progress = info["progress"] if info else 0
         year = genre = fmt = None
