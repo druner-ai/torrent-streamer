@@ -36,7 +36,7 @@ VERSION = "0.1.0"
 # --- конфиг (env с дефолтами) ---
 QBT_URL = os.getenv("QBT_URL", "http://127.0.0.1:8080")
 QBT_USER = os.getenv("QBT_USER", "admin")
-QBT_PASS = os.getenv("QBT_PASS", "adminadmin")
+QBT_PASS = os.getenv("QBT_PASS", "")
 MPD_HOST = os.getenv("MPD_HOST", "127.0.0.1")
 MPD_PORT = int(os.getenv("MPD_PORT", "6600"))
 OAAT_TARGET = os.getenv("OAAT_TARGET", "192.168.31.215:9740")
