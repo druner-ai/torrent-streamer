@@ -725,6 +725,25 @@ def test_sources_crud_and_scan(tmp_path):
     _reset_oaat_state()
 
 
+def test_scan_artist_from_tags(tmp_path):
+    """Папка без «Artist - » в имени: артист подтягивается из тегов."""
+    _reset_oaat_state()
+    media = tmp_path / "mm"
+    alb = media / "Cauldron"
+    alb.mkdir(parents=True)
+    (alb / "01.flac").write_bytes(b"x")
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), \
+         patch.object(main, "_read_meta",
+                      return_value=(300.0, "T", "Matthew Shipp", "Cauldron", "16/44")):
+        main._SCAN_STATE.update(running=True, path=str(media), scanned=0,
+                                added=0, updated=0, errors=0)
+        main._scan_root(str(media))
+        main._SCAN_STATE["running"] = False
+        a = next(x for x in client.get("/api/albums").json() if x["origin"] == "folder")
+        assert a["artist"] == "Matthew Shipp" and a["name"] == "Cauldron"
+    _reset_oaat_state()
+
+
 def test_sources_add_rejects_missing_dir(tmp_path):
     _reset_oaat_state()
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):

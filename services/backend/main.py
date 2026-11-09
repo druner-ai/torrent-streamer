@@ -2178,8 +2178,16 @@ def _upsert_local_album(c, album_dir: str, audio) -> bool:
     dirname = os.path.basename(album_dir)
     artist, name = _parse_folder_album(dirname)
     audio.sort(key=lambda e: e.name)
-    row = c.execute("SELECT id FROM albums WHERE hash=?", (h,)).fetchone()
+    row = c.execute("SELECT id, artist FROM albums WHERE hash=?", (h,)).fetchone()
     created = row is None
+    # имя папки не дало артиста (или альбом уже лежит без артиста) — берём из тегов
+    if (created and not artist) or (row is not None and not row["artist"]):
+        try:
+            _, _, tag_artist, _, _ = _read_meta(audio[0].path)
+            if tag_artist:
+                artist = tag_artist
+        except Exception:  # noqa: BLE001, S110 — теги не критичны
+            pass
     if created:
         cur = c.execute(
             "INSERT INTO albums(hash,name,artist,status,added_at) VALUES(?,?,?,?,?)",
@@ -2187,6 +2195,8 @@ def _upsert_local_album(c, album_dir: str, audio) -> bool:
         aid = cur.lastrowid
     else:
         aid = row["id"]
+        if artist and not row["artist"]:
+            c.execute("UPDATE albums SET artist=? WHERE id=?", (artist, aid))
     existing = {t["path"]: t["size"] for t in
                 c.execute("SELECT path,size FROM tracks WHERE album_id=?", (aid,))}
     names = set()
