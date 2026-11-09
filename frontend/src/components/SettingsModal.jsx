@@ -26,6 +26,40 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [scanState, setScanState] = useState(null)
   const [newDir, setNewDir] = useState('')
   const [srcBusy, setSrcBusy] = useState(false)
+  const [epName, setEpName] = useState('')
+  const [epAddr, setEpAddr] = useState('')
+  const [epBusy, setEpBusy] = useState(null)
+
+  const addManualEp = async () => {
+    const name = epName.trim()
+    const address = epAddr.trim()
+    if (!name || !address) return
+    setEpBusy('add')
+    try {
+      await api.addManualEndpoint(name, address)
+      setEpName('')
+      setEpAddr('')
+      const d = await api.endpoints()
+      setEndpointList(d.endpoints || [])
+      notify?.('Эндпоинт добавлен', 'success')
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+    setEpBusy(null)
+  }
+
+  const removeManualEp = async (name) => {
+    setEpBusy(name)
+    try {
+      await api.removeManualEndpoint(name)
+      const d = await api.endpoints()
+      setEndpointList(d.endpoints || [])
+      notify?.('Эндпоинт удалён', 'success')
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+    setEpBusy(null)
+  }
 
   const refreshSources = () => {
     api
@@ -417,11 +451,10 @@ export default function SettingsModal({ open, onClose, notify }) {
               </p>
             </div>
 
-            {endpointList.length > 0 && (
-              <div>
-                <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-text-muted">
-                  Эндпоинты{updLatest ? ` · доступна ${updLatest}` : ''}
-                </h3>
+            <div>
+              <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-text-muted">
+                Эндпоинты{updLatest ? ` · доступна ${updLatest}` : ''}
+              </h3>
                 {endpointList.map((ep) => (
                   <div key={ep.name} className="mb-2 flex items-center gap-2">
                     <button
@@ -439,7 +472,7 @@ export default function SettingsModal({ open, onClose, notify }) {
                       <span className="min-w-0 flex-1 text-[13px] text-text-secondary">
                         <span className="block truncate">
                           {ep.name}
-                          {ep.auto ? ' (mDNS)' : ''}
+                          {ep.manual ? ' (вручную)' : ep.auto ? ' (mDNS)' : ''}
                           {ep.active ? ' · активен' : ''}
                         </span>
                         {ep.version && (
@@ -473,15 +506,53 @@ export default function SettingsModal({ open, onClose, notify }) {
                       {regenBusy === ep.name && <Loader2 size={12} className="animate-spin" />}
                       Регенерировать токен
                     </button>
+                    {ep.manual && (
+                      <button
+                        type="button"
+                        onClick={() => removeManualEp(ep.name)}
+                        disabled={epBusy != null}
+                        title="Удалить endpoint"
+                        className="shrink-0 rounded-sm p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-red-400 disabled:opacity-60"
+                      >
+                        {epBusy === ep.name ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <Trash2 size={14} />
+                        )}
+                      </button>
+                    )}
                   </div>
                 ))}
+                <div className="mt-2 flex gap-2">
+                  <input
+                    value={epName}
+                    onChange={(e) => setEpName(e.target.value)}
+                    placeholder="Имя"
+                    className="h-9 w-28 shrink-0 rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
+                  />
+                  <input
+                    value={epAddr}
+                    onChange={(e) => setEpAddr(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && addManualEp()}
+                    placeholder="host:port (192.168.1.50:9740)"
+                    className="h-9 min-w-0 flex-1 rounded-sm border border-transparent bg-surface-inset px-3 font-mono text-[12.5px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={addManualEp}
+                    disabled={epBusy != null || !epName.trim() || !epAddr.trim()}
+                    className="h-9 shrink-0 rounded-sm bg-surface-2 px-3 text-[13px] text-text-primary transition-colors hover:bg-surface-3 disabled:opacity-40"
+                  >
+                    {epBusy === 'add' && <Loader2 size={12} className="mr-1 inline animate-spin" />}
+                    Добавить
+                  </button>
+                </div>
                 <p className="mt-1 text-[11px] text-text-muted">
                   Тап по названию — сделать endpoint активным (звук пойдёт на него).
-                  Обновление: бинарь из последнего релиза, endpoint перезапустится сам.
-                  Токен — только для авто-сгенерированных.
+                  Эндпоинты находятся автоматически по mDNS; если роутер режет multicast —
+                  добавьте вручную по IP (адрес endpoint'а виден в его логе при старте).
                 </p>
               </div>
-            )}
           </div>
         )}
 

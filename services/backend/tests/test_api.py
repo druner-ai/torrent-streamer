@@ -725,6 +725,43 @@ def test_sources_crud_and_scan(tmp_path):
     _reset_oaat_state()
 
 
+def test_manual_endpoints_crud(tmp_path):
+    """Ручной эндпоинт: добавление → валидация → список/select → удаление."""
+    _reset_oaat_state()
+    main._EP_ADDR_CACHE.clear()
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), \
+         patch.object(main, "ACTIVE_EP_FILE", str(tmp_path / "active_ep")), \
+         patch.object(main, "_mdns_services", return_value={}), \
+         patch.object(main, "_ep_status", return_value={"connected": False}):
+        r = client.post("/api/endpoints/manual",
+                        json={"name": "Кухня", "address": "192.168.1.50:9740"})
+        assert r.status_code == 200
+        assert r.json()["manual"] == {"Кухня": "192.168.1.50:9740"}
+        # валидация адреса и имени
+        assert client.post("/api/endpoints/manual",
+                           json={"name": "X", "address": "bad"}).status_code == 400
+        assert client.post("/api/endpoints/manual",
+                           json={"name": "", "address": "h:100"}).status_code == 400
+        assert client.post("/api/endpoints/manual",
+                           json={"name": "Y", "address": "h:99999"}).status_code == 400
+        # виден в списке как manual
+        eps = client.get("/api/endpoints").json()["endpoints"]
+        ep = next(e for e in eps if e["name"] == "Кухня")
+        assert ep["manual"] is True and ep["auto"] is False
+        assert ep["control"] == "192.168.1.50:9740"
+        # резолв адреса и select принимают ручное имя
+        assert main._ep_addr("Кухня") == "192.168.1.50:9740"
+        with patch.object(main, "_start_ts"):
+            r = client.post("/api/endpoints/select", json={"endpoint": "Кухня"})
+            assert r.status_code == 200 and r.json()["active"] == "Кухня"
+        # удаление (в т.ч. активного) и повтор — 404
+        r = client.delete("/api/endpoints/manual?name=Кухня")
+        assert r.status_code == 200 and r.json()["manual"] == {}
+        assert client.delete("/api/endpoints/manual?name=Кухня").status_code == 404
+    main._EP_ADDR_CACHE.clear()
+    _reset_oaat_state()
+
+
 def test_parse_folder_album_numeric_prefix():
     """'02 - Song' — номер трека не становится артистом."""
     assert main._parse_folder_album("02 - The Nearness Of You") == (None, "02 - The Nearness Of You")

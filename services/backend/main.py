@@ -160,6 +160,25 @@ OAAT_ENDPOINTS = _parse_endpoints(os.getenv("OAAT_ENDPOINTS", ""))
 if not OAAT_ENDPOINTS and OAAT_TARGET:
     # legacy: один прямой адрес → единственный эндпоинт; иначе полагаемся на mDNS-автообнаружение
     OAAT_ENDPOINTS = {"Endpoint": [OAAT_TARGET]}
+
+
+def _manual_endpoints() -> dict:
+    """Эндпоинты, добавленные вручную через UI (настройка manual_endpoints: {имя: 'host:port'})."""
+    raw = _get_setting("manual_endpoints")
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        return {}
+    return {k: v for k, v in d.items() if isinstance(k, str) and isinstance(v, str) and v}
+
+
+def _configured_endpoints() -> dict:
+    """Все настроенные эндпоинты: .env (приоритет при коллизии имён) + добавленные вручную."""
+    merged = {k: [v] for k, v in _manual_endpoints().items()}
+    merged.update(OAAT_ENDPOINTS)
+    return merged
 ACTIVE_EP_FILE = os.getenv("ACTIVE_EP_FILE", "/data/active_endpoint")
 OAAT_CONTROL_TOKEN = os.getenv("OAAT_CONTROL_TOKEN", "")
 # Виртуальные/ненужные аудиоустройства, которые прячем из списка (подстроки через запятую).
@@ -175,7 +194,7 @@ _EP_ADDR_TTL = 30.0
 def _resolve_ep(name: str, force: bool = False) -> str | None:
     """Пробегает кандидатов по порядку: первый живой mDNS; иначе первый прямой адрес.
     Для endpoint'ов без записи в .env — авто-обнаружение по точному mDNS-имени."""
-    cands = OAAT_ENDPOINTS.get(name, [])
+    cands = _configured_endpoints().get(name, [])
     direct = None
     for cand in cands:
         if cand.startswith("mdns:"):
@@ -225,13 +244,15 @@ def _ep_headers(name: str | None = None) -> dict:
 def _active_ep_name() -> str | None:
     try:
         name = Path(ACTIVE_EP_FILE).read_text().strip()
-        # валидно: настроенный в .env, либо обнаруженный по mDNS, либо недавно резолвленный
-        if name in OAAT_ENDPOINTS or name in _mdns_services() or name in _EP_ADDR_CACHE:
+        # валидно: настроенный (.env/вручную), либо обнаруженный по mDNS, либо недавно резолвленный
+        if (name in _configured_endpoints() or name in _mdns_services()
+                or name in _EP_ADDR_CACHE):
             return name
     except OSError:
         pass
-    if OAAT_ENDPOINTS:
-        return next(iter(OAAT_ENDPOINTS))
+    cfg = _configured_endpoints()
+    if cfg:
+        return next(iter(cfg))
     discovered = _mdns_services()
     if discovered:
         return next(iter(discovered))
@@ -1124,7 +1145,7 @@ def setup_status():
     missing = []
     if not (_rutracker_login() and _rutracker_password()):
         missing.append("rutracker")
-    if not OAAT_ENDPOINTS and not _mdns_services():
+    if not _configured_endpoints() and not _mdns_services():
         missing.append("endpoint")
     try:
         QB().info()
@@ -3176,23 +3197,58 @@ def _ep_status(name: str) -> dict:
 
 @app.get("/api/endpoints")
 def endpoints():
-    """Все endpoint'ы (настроенные в .env + авто-обнаруженные mDNS) + устройства + активный."""
+    """Все endpoint'ы (.env + добавленные вручную + авто-обнаруженные mDNS) + устройства + активный."""
     active = _active_ep_name()
+    cfg = _configured_endpoints()
+    manual = _manual_endpoints()
     discovered = _mdns_services()
-    names = list(OAAT_ENDPOINTS) + [n for n in discovered if n not in OAAT_ENDPOINTS]
+    names = list(cfg) + [n for n in discovered if n not in cfg]
     eps = []
     for name in names:
         ep = {"name": name, "control": _ep_addr(name), "active": name == active,
-              "auto": name not in OAAT_ENDPOINTS}
+              "auto": name not in cfg, "manual": name in manual and name not in OAAT_ENDPOINTS}
         ep.update(_ep_status(name))
         eps.append(ep)
     return {"active": active, "endpoints": eps}
 
 
+class ManualEpReq(BaseModel):
+    name: str
+    address: str = ""
+
+
+@app.post("/api/endpoints/manual")
+def endpoints_manual_add(req: ManualEpReq):
+    """Добавить endpoint вручную (имя + host:port) — для сетей, где mDNS не работает."""
+    name = req.name.strip()
+    addr = req.address.strip()
+    if not name or name in OAAT_ENDPOINTS:
+        raise HTTPException(400, "пустое имя или конфликт с endpoint'ом из .env")
+    m = re.match(r"^[^:\s]+:\d{1,5}$", addr)
+    if not m or not (0 < int(addr.rsplit(":", 1)[1]) < 65536):
+        raise HTTPException(400, "адрес в формате host:port (например 192.168.1.50:9740)")
+    eps = _manual_endpoints()
+    eps[name] = addr
+    _set_setting("manual_endpoints", json.dumps(eps))
+    return {"ok": True, "manual": eps}
+
+
+@app.delete("/api/endpoints/manual")
+def endpoints_manual_remove(name: str):
+    eps = _manual_endpoints()
+    if name not in eps:
+        raise HTTPException(404, "такого endpoint'а нет среди добавленных вручную")
+    del eps[name]
+    _set_setting("manual_endpoints", json.dumps(eps))
+    if _active_ep_name() == name:
+        _set_active_ep("")  # активный сбрасывается — watchdog/select выберет доступный
+    return {"ok": True, "manual": eps}
+
+
 @app.post("/api/endpoints/select")
 def endpoints_select(req: EndpointSelectReq):
     """Переключить активный endpoint (перезапуск ts-controller) и/или устройство на нём."""
-    if (req.endpoint and req.endpoint not in OAAT_ENDPOINTS
+    if (req.endpoint and req.endpoint not in _configured_endpoints()
             and req.endpoint not in _mdns_services()):
         raise HTTPException(400, f"неизвестный endpoint: {req.endpoint}")
     if req.endpoint:
@@ -3223,7 +3279,7 @@ def endpoints_regenerate_token(req: EndpointSelectReq):
     в mDNS TXT; backend подхватывает его форс-обзором через несколько секунд.
     Доступно только для авто-сгенерированных токенов (иначе endpoint отдаёт 409).
     """
-    if (req.endpoint and req.endpoint not in OAAT_ENDPOINTS
+    if (req.endpoint and req.endpoint not in _configured_endpoints()
             and req.endpoint not in _mdns_services()):
         raise HTTPException(400, f"неизвестный endpoint: {req.endpoint}")
     name = req.endpoint or _active_ep_name()

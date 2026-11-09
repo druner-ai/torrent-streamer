@@ -102,6 +102,9 @@ export const api = {
       { method: 'DELETE' },
     ),
   scanSources: (path) => post('/api/sources/scan', { path: path || '' }),
+  addManualEndpoint: (name, address) => post('/api/endpoints/manual', { name, address }),
+  removeManualEndpoint: (name) =>
+    request(`/api/endpoints/manual?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   addToQueue: (albumId, trackIndex, mode) =>
     post('/api/queue', { album_id: albumId, track_index: trackIndex, mode }),
   removeQueue: (pos) => request(`/api/queue?pos=${pos}`, { method: 'DELETE' }),
