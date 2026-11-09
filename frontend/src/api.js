@@ -15,6 +15,7 @@ async function request(path, options = {}) {
     }
     const err = new Error(detail)
     err.status = res.status
+    if (res.status === 401) window.dispatchEvent(new Event('sv:unauthorized'))
     throw err
   }
 

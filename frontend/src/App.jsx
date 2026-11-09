@@ -61,6 +61,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   // null = мастер не показываем; массив missing = показать шаг за шагом
   const [setupMissing, setSetupMissing] = useState(null)
+  const [authRequired, setAuthRequired] = useState(false)
 
   useEffect(() => {
     if (sessionStorage.getItem('sv_setup_skipped')) return
@@ -437,8 +438,32 @@ export default function App() {
     isPlayingAlbum,
   }
 
+  useEffect(() => {
+    const onUnauth = () => setAuthRequired(true)
+    window.addEventListener('sv:unauthorized', onUnauth)
+    return () => window.removeEventListener('sv:unauthorized', onUnauth)
+  }, [])
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-bg-base text-text-primary">
+      {authRequired && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-overlay p-6">
+          <div className="max-w-sm rounded-lg border border-border-subtle bg-surface-2 p-6 text-center shadow-4">
+            <p className="mb-2 text-[15px] font-semibold text-text-primary">Требуется вход</p>
+            <p className="mb-5 text-[13px] leading-relaxed text-text-secondary">
+              Сервер не принял авторизацию — библиотека не загрузилась. Нажмите «Войти» и
+              введите логин и пароль в окне браузера.
+            </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="h-10 w-full rounded-md bg-primary text-[13.5px] font-semibold text-on-primary transition-colors hover:bg-primary-hover"
+            >
+              Войти
+            </button>
+          </div>
+        </div>
+      )}
       <Sidebar
         view={view}
         onNavigate={setView}

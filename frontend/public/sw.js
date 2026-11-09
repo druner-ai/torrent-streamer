@@ -1,10 +1,25 @@
 /* SoundVault SW: network-first с офлайн-фолбэком на кэш.
-   /api/ никогда не кэшируем — только живые данные. */
-const CACHE = 'soundvault-v1'
+   /api/ никогда не кэшируем — только живые данные.
+   В кэш попадают ТОЛЬКО успешные ответы (res.ok): закэшированный 401
+   отдавался бы из офлайн-фолбэка как «мёртвая» страница без промпта пароля. */
+const CACHE = 'soundvault-v2'
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png']
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}))
+  e.waitUntil(
+    caches
+      .open(CACHE)
+      .then((c) =>
+        Promise.all(
+          SHELL.map((u) =>
+            fetch(u)
+              .then((r) => (r.ok ? c.put(u, r) : undefined))
+              .catch(() => {}),
+          ),
+        ),
+      )
+      .catch(() => {}),
+  )
   self.skipWaiting()
 })
 
@@ -24,8 +39,10 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(
     fetch(e.request)
       .then((res) => {
-        const copy = res.clone()
-        caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {})
+        if (res.ok) {
+          const copy = res.clone()
+          caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {})
+        }
         return res
       })
       .catch(async () => {
