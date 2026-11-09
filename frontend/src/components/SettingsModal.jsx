@@ -155,7 +155,7 @@ export default function SettingsModal({ open, onClose, notify }) {
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-overlay md:items-center" onClick={onClose}>
       <div
-        className="w-full max-w-md rounded-t-xl bg-surface-3 p-5 shadow-4 md:rounded-lg"
+        className="max-h-[92dvh] w-full max-w-md overflow-y-auto overscroll-contain rounded-t-xl bg-surface-3 p-5 shadow-4 md:rounded-lg"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center gap-3">
