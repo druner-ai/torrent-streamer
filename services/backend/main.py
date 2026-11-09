@@ -2380,6 +2380,10 @@ def _scan_worker(targets: list) -> None:
 _BACKFILL_STATE = {"running": False, "total": 0, "done": 0, "updated": 0,
                    "errors": 0, "album": None}
 _BACKFILL_LOCK = threading.Lock()
+# Пауза между треками (сек): бэкфилл читает теги с медленных монтирований
+# (SMB/USB) и без троттлинга доводит load до десятков на 8 ядрах — API
+# (в т.ч. /api/albums, который фронт поллит каждые 5с) деградирует до 10с+.
+_BACKFILL_DELAY = 0.1
 
 
 def _read_tags_full(path):
@@ -2498,6 +2502,7 @@ def _backfill_worker() -> None:
                 if tags:
                     _BACKFILL_STATE["updated"] += 1
                 _BACKFILL_STATE["done"] += 1
+                time.sleep(_BACKFILL_DELAY)  # троттлинг: не дать I/O-голод API
                 if i % 50 == 49:
                     c.commit()
             if artist_tag and not a["artist"]:
