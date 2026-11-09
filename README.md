@@ -35,7 +35,8 @@ into a persistent library, and play bit-perfectly to OAAT audio endpoints discov
 
 ## Быстрый старт
 
-Предварительно: Docker + qBittorrent-nox на хосте (WebUI на 8080).
+Предварительно: только Docker. qBittorrent можно не ставить отдельно — есть
+режим «Полный стек» ниже (или используйте свой qbt-nox на хосте, WebUI на 8080).
 
 ```bash
 git clone https://github.com/druner-ai/torrent-streamer.git
@@ -48,6 +49,29 @@ docker compose up -d --build
 подключение к qBittorrent, логин трекера, выбор аудио-эндпоинта.
 
 Переменные окружения — см. `.env.example` (все опциональны, кроме qBittorrent).
+
+## Полный стек (qBittorrent + FlareSolverr в контейнерах)
+
+Одна команда поднимает весь серверный стек — отдельно ставить qbt не нужно:
+
+```bash
+docker compose --profile full up -d --build
+```
+
+- **qBittorrent**: WebUI на `127.0.0.1:8080` (loopback — наружу не торчит),
+  логин `admin`. При первом старте qbt печатает временный пароль:
+  `docker compose logs qbittorrent | grep -i password`. Введите его в мастере
+  настройки SoundVault (или смените на свой в WebUI qbt → Настройки → Web UI —
+  и тогда в мастере/`.env` (`QBT_PASS`) укажите уже свой). Каталог загрузок —
+  `DOWNLOADS_DIR` из `.env`: монтируется в qbt как `/downloads` (его дефолтный
+  путь сохранения), а в backend — тем же хост-путём и как `/downloads`, поэтому
+  пути из qbt API резолвятся корректно.
+- **FlareSolverr** (обход Cloudflare для RuTracker — витрина трекера и скачивание):
+  поднимется на `127.0.0.1:8191` (только loopback), с лимитами 1 CPU / 1 ГБ RAM,
+  чтобы решение CF-challenge не мешало звуку. Backend уже настроен на него через
+  `FLARESOLVERR_URL` по умолчанию.
+- Prowlarr (поиск по индексаторам) остаётся внешним и опциональным —
+  `PROWLARR_URL`/`PROWLARR_API_KEY` в `.env`.
 
 ## Эндпоинты (звук)
 

@@ -1,7 +1,11 @@
 # Torrent-streamer — self-hosted аудио-стример с торрентов.
 # Развёртывание: ./scripts/install.sh && docker compose up -d
 #
-# Downloader (qbittorrent-nox) и плеер (MPD) запускаются на ХОСТЕ (не здесь):
+# Полный стек ОДНОЙ командой (qBittorrent + FlareSolverr в контейнерах):
+#   docker compose --profile full up -d
+# (см. README «Полный стек» — пароль qbt, DOWNLOADS_DIR, лимиты FlareSolverr.)
+#
+# Альтернатива: downloader (qbittorrent-nox) и плеер (MPD) на ХОСТЕ (не здесь):
 #   - qbittorrent-nox — качает торренты (sequential), работает за CGNAT (18 MiB/s проверено).
 #   - MPD — bit-perfect вывод через ALSA/USB-DAC.
 # Backend (FastAPI) работает в Docker с network_mode: host — ему нужен доступ к
@@ -56,6 +60,9 @@ services:
       # backend берёт абсолютные пути файлов прямо из qbt API.
       # Задайте DOWNLOADS_DIR в .env (абсолютный путь, напр. /srv/torrents/downloads).
       - ${DOWNLOADS_DIR:-/srv/torrents/downloads}:${DOWNLOADS_DIR:-/srv/torrents/downloads}:ro
+      # Второй маунт того же каталога в /downloads — для qbt из профиля "full"
+      # (его save_path = /downloads/...): пути из qbt API резолвятся в backend.
+      - ${DOWNLOADS_DIR:-/srv/torrents/downloads}:/downloads:ro
       # Медиапапки (USB-диски / сетевые монтирования NAS) — источники для
       # сканирования в «Настройки → Медиапапки». Пути должны совпадать с хостовыми
       # (в т.ч. точки монтирования из /etc/fstab). Не используются — оставьте как есть,
@@ -92,5 +99,51 @@ services:
     depends_on:
       - backend
 
+  # Полный стек (профиль "full"): qBittorrent + FlareSolverr рядом с backend.
+  #   docker compose --profile full up -d
+  # qbt WebUI: 127.0.0.1:8080 (loopback), логин admin; временный пароль ПЕРВОГО
+  # старта — в `docker compose logs qbittorrent` (его же можно ввести в мастере
+  # настройки SoundVault; смену пароля qbt поддерживает только через свой WebUI/API).
+  qbittorrent:
+    image: linuxserver/qbittorrent:latest
+    profiles: ["full"]
+    container_name: torrent-streamer-qbittorrent
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - WEBUI_PORT=8080
+    volumes:
+      - qbt-config:/config
+      # Каталог загрузок монтируется в /downloads (дефолт qbt) — save_path из
+      # qbt API (/downloads/...) совпадает с тем же томом в backend.
+      - ${DOWNLOADS_DIR:-/srv/torrents/downloads}:/downloads
+    # Только loopback: WebUI qbt не торчит в LAN/интернет. Backend работает в
+    # host-сети и достучится по 127.0.0.1:8080. Пир-порт торрентов наружу НЕ
+    # публикуется — входящие соединения пиров и так работают через CGNAT/NAT
+    # (исходящие коннекты + DHT), а лишних открытых портов не будет.
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+  # Обход Cloudflare для RuTracker (нужен для витрины трекера и скачивания).
+  # Лимит 1 CPU / 1 ГБ — как на боевом NUC: решение CF-challenge не должно
+  # мешать звуку. Только loopback — наружу не торчит.
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    profiles: ["full"]
+    container_name: torrent-streamer-flaresolverr
+    environment:
+      - LOG_LEVEL=info
+    ports:
+      - "127.0.0.1:8191:8191"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    restart: unless-stopped
+
 volumes:
   ts-state:
+  qbt-config:
