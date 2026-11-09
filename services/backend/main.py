@@ -1946,18 +1946,6 @@ def albums():
                           ORDER BY album_id, id"""):
         if m["album_id"] not in meta:
             meta[m["album_id"]] = (m["year"], m["genre"], m["format"])
-    root_ok: dict = {}
-
-    def _dir_available(d: str) -> bool:
-        # один stat на корень медиапапки, а не на каждый альбом (SMB-монтирования
-        # делают массовые stat дорогими)
-        for root in _media_dirs():
-            rr = root.rstrip("/")
-            if d == rr or d.startswith(rr + "/"):
-                if rr not in root_ok:
-                    root_ok[rr] = os.path.isdir(rr)
-                return root_ok[rr]
-        return os.path.isdir(d)
 
     for r in rows:
         local = _is_local(r["hash"])
@@ -2258,6 +2246,28 @@ def _media_dirs() -> list:
 _SCAN_STATE = {"running": False, "path": None, "scanned": 0,
                "added": 0, "updated": 0, "errors": 0}
 _SCAN_LOCK = threading.Lock()
+
+# Кэш доступности корней медиапапок (TTL): /api/albums на каждый запрос делает
+# os.path.isdir() на SMB-корне, а при активном бэкфилле (чтение тегов по SMB)
+# этот stat блокируется на секунды — API деградирует. Доступность корня меняется
+# редко (размонтировали NAS), поэтому кэш на 30с снимает SMB с горячего пути.
+_MEDIA_ROOT_OK: dict = {}  # path -> (bool, ts)
+
+
+def _dir_available(d: str) -> bool:
+    def _check(rr: str) -> bool:
+        now = time.time()
+        hit = _MEDIA_ROOT_OK.get(rr)
+        if hit and now - hit[1] < 30:
+            return hit[0]
+        ok = os.path.isdir(rr)
+        _MEDIA_ROOT_OK[rr] = (ok, now)
+        return ok
+    for root in _media_dirs():
+        rr = root.rstrip("/")
+        if d == rr or d.startswith(rr + "/"):
+            return _check(rr)
+    return _check(d)
 
 
 def _parse_folder_album(dirname: str):
@@ -2577,6 +2587,7 @@ def sources_remove(path: str, delete_albums: bool = True):
         raise HTTPException(404, "такой медиапапки нет в списке")
     dirs.remove(p)
     _set_setting("media_dirs", json.dumps(dirs))
+    _MEDIA_ROOT_OK.pop(p, None)  # сброс кэша доступности удалённого корня
     removed = 0
     if delete_albums:
         c = db()
