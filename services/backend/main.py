@@ -3177,15 +3177,42 @@ def queue_jump(pos: int):
 def queue_get():
     out = []
     for i, e in enumerate(_QUEUE):
-        title = f"альбом {e['aid']} #{e['idx']}"
+        item = {"album_id": e["aid"], "track_index": e["idx"], "current": i == _QUEUE_POS,
+                "title": f"альбом {e['aid']} #{e['idx']}",
+                "artist": None, "album": None, "duration": None}
         with contextlib.suppress(Exception):
-            tracks, _, _ = _current_tracks(e["aid"])
-            if 0 <= e["idx"] < len(tracks):
-                t = tracks[e["idx"]]
-                title = t["title"] or _clean_track_name(t["name"])
-        out.append({"album_id": e["aid"], "track_index": e["idx"],
-                    "title": title, "current": i == _QUEUE_POS})
+            con = db()
+            row = con.execute("SELECT artist, name FROM albums WHERE id=?",
+                              (e["aid"],)).fetchone()
+            if row:
+                item["artist"] = row["artist"]
+                item["album"] = row["name"]
+            # тот же порядок, что в _current_tracks (ORDER BY path), но без qbt —
+            # очередь опрашивается часто, логин в qbt на каждый элемент избыточен
+            t = con.execute(
+                "SELECT title, name, duration FROM tracks WHERE album_id=? "
+                "ORDER BY path LIMIT 1 OFFSET ?", (e["aid"], e["idx"])).fetchone()
+            if t:
+                item["title"] = t["title"] or _clean_track_name(t["name"])
+                item["duration"] = t["duration"]
+        out.append(item)
     return {"queue": out, "pos": _QUEUE_POS}
+
+
+@app.delete("/api/queue")
+def queue_remove(pos: int):
+    """Убрать позицию из очереди. Текущий трек продолжает играть; если удалён
+    он — курсор очереди встаёт на следующий (или -1 при пустой очереди)."""
+    global _QUEUE_POS
+    if not (0 <= pos < len(_QUEUE)):
+        raise HTTPException(400, "нет такой позиции в очереди")
+    _QUEUE.pop(pos)
+    if pos < _QUEUE_POS:
+        _QUEUE_POS -= 1
+    elif pos == _QUEUE_POS:
+        _QUEUE_POS = min(pos, len(_QUEUE) - 1)
+    _persist_player_state()
+    return {"ok": True, "queue_len": len(_QUEUE), "pos": _QUEUE_POS}
 
 
 # фронт: в Docker (multi-stage) собранный React-билд в dist/, локально/в тестах — старый static/

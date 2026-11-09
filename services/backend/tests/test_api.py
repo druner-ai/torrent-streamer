@@ -626,6 +626,51 @@ def test_queue_add_and_get():
     _reset_oaat_state()
 
 
+def test_queue_remove():
+    _reset_oaat_state()
+    with patch.object(main, "_start_track", return_value={"ok": True}):
+        client.post("/api/queue", json={"album_id": 1, "track_index": 0, "mode": "end"})
+        client.post("/api/queue", json={"album_id": 1, "track_index": 1, "mode": "end"})
+        client.post("/api/queue", json={"album_id": 1, "track_index": 2, "mode": "end"})
+        # удаляем НЕ текущий (pos=1) — курсор не сдвигается
+        r = client.delete("/api/queue?pos=1")
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "queue_len": 2, "pos": 0}
+        # удаляем текущий (pos=0) — курсор встаёт на следующий
+        r = client.delete("/api/queue?pos=0")
+        assert r.json() == {"ok": True, "queue_len": 1, "pos": 0}
+        q = client.get("/api/queue").json()["queue"]
+        assert q[0]["track_index"] == 2 and q[0]["current"] is True
+        # невалидная позиция
+        assert client.delete("/api/queue?pos=5").status_code == 400
+        # опустошение → pos=-1
+        r = client.delete("/api/queue?pos=0")
+        assert r.json() == {"ok": True, "queue_len": 0, "pos": -1}
+    _reset_oaat_state()
+
+
+def test_queue_get_enriched_without_qbt(tmp_path):
+    """GET /api/queue отдаёт исполнителя/альбом/длительность из БД, не трогая qbt."""
+    _reset_oaat_state()
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), \
+         patch.object(main, "_start_track", return_value={"ok": True}):
+        c = main.db()
+        cur = c.execute("INSERT INTO albums(hash,name,artist,status,added_at) VALUES(?,?,?,?,?)",
+                        ("h1", "Aja", "Steely Dan", "complete", 0))
+        aid = cur.lastrowid
+        c.execute("INSERT INTO tracks(album_id,path,name,title,duration,size) VALUES(?,?,?,?,?,?)",
+                  (aid, "01.flac", "01.flac", "Black Cow", 321.5, 100))
+        c.commit()
+        c.close()
+        client.post("/api/queue", json={"album_id": aid, "track_index": 0, "mode": "end"})
+        q = client.get("/api/queue").json()["queue"][0]
+        assert q["title"] == "Black Cow"
+        assert q["artist"] == "Steely Dan"
+        assert q["album"] == "Aja"
+        assert q["duration"] == 321.5
+    _reset_oaat_state()
+
+
 def test_queue_add_idle_autostart_failure_keeps_track():
     _reset_oaat_state()
     with patch.object(main, "_start_track",

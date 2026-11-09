@@ -16,6 +16,7 @@ export default function Library({
   onQueryChange,
   onOpen,
   onPlay,
+  onQueue,
   onToggleFavorite,
   isPlayingAlbum,
   history = [],
@@ -206,6 +207,7 @@ export default function Library({
         loading={loading}
         onOpen={onOpen}
         onPlay={onPlay}
+        onQueue={onQueue}
         onToggleFavorite={onToggleFavorite}
         isPlayingAlbum={isPlayingAlbum}
       />

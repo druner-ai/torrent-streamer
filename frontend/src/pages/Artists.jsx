@@ -6,6 +6,7 @@ export default function Artists({
   loading,
   onOpen,
   onPlay,
+  onQueue,
   onToggleFavorite,
   isPlayingAlbum,
 }) {
@@ -36,6 +37,7 @@ export default function Artists({
           loading
           onOpen={onOpen}
           onPlay={onPlay}
+          onQueue={onQueue}
           onToggleFavorite={onToggleFavorite}
           isPlayingAlbum={isPlayingAlbum}
         />
@@ -59,6 +61,7 @@ export default function Artists({
                 loading={false}
                 onOpen={onOpen}
                 onPlay={onPlay}
+                onQueue={onQueue}
                 onToggleFavorite={onToggleFavorite}
                 isPlayingAlbum={isPlayingAlbum}
               />

@@ -213,6 +213,18 @@ export default function App() {
     [loadQueue, loadPlayer, pushToast],
   )
 
+  const handleRemoveQueue = useCallback(
+    async (pos) => {
+      try {
+        await api.removeQueue(pos)
+        loadQueue()
+      } catch (e) {
+        pushToast(e.message, 'error')
+      }
+    },
+    [loadQueue, pushToast],
+  )
+
   const handlePlayerCmd = useCallback(
     async (cmd) => {
       try {
@@ -420,6 +432,7 @@ export default function App() {
     loading: albumsLoading,
     onOpen: setOpenAlbumId,
     onPlay: handlePlayAlbum,
+    onQueue: (album) => handleAddToQueue(album.id, 0, 'end'),
     onToggleFavorite: (album) => handleToggleFavorite(album.id),
     isPlayingAlbum,
   }
@@ -491,9 +504,9 @@ export default function App() {
           {view === 'queue' && (
             <Queue
               queue={queue}
-              player={player}
               loading={queueLoading}
               onJump={handleJump}
+              onRemove={handleRemoveQueue}
             />
           )}
         </div>

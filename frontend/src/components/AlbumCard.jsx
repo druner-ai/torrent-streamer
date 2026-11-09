@@ -1,4 +1,4 @@
-import { Disc3, Heart, Pause, Play } from 'lucide-react'
+import { Disc3, Heart, ListPlus, Pause, Play } from 'lucide-react'
 import { useState } from 'react'
 import { api } from '../api.js'
 import { formatBadge, isHiRes, statusLabel, statusTone } from '../utils.js'
@@ -19,7 +19,7 @@ const toneBar = {
   muted: 'bg-text-muted',
 }
 
-export default function AlbumCard({ album, onOpen, onPlay, onToggleFavorite, isPlaying }) {
+export default function AlbumCard({ album, onOpen, onPlay, onQueue, onToggleFavorite, isPlaying }) {
   const [coverFailed, setCoverFailed] = useState(false)
   const badge = formatBadge(album.format)
   const showProgress = album.status !== 'complete'
@@ -68,6 +68,21 @@ export default function AlbumCard({ album, onOpen, onPlay, onToggleFavorite, isP
         >
           <Heart size={14} className={album.favorite ? 'fill-primary text-primary' : ''} />
         </button>
+
+        {onQueue && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onQueue(album)
+            }}
+            aria-label="Добавить в очередь"
+            title="В очередь"
+            className="absolute bottom-2 right-14 flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-text-primary opacity-90 shadow-2 backdrop-blur-sm transition-all duration-200 hover:bg-black/60 hover:opacity-100 md:translate-y-1 md:opacity-0 md:group-hover:translate-y-0 md:group-hover:opacity-100"
+          >
+            <ListPlus size={18} />
+          </button>
+        )}
 
         <button
           type="button"

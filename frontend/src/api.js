@@ -96,6 +96,7 @@ export const api = {
   queue: () => request('/api/queue'),
   addToQueue: (albumId, trackIndex, mode) =>
     post('/api/queue', { album_id: albumId, track_index: trackIndex, mode }),
+  removeQueue: (pos) => request(`/api/queue?pos=${pos}`, { method: 'DELETE' }),
   jumpQueue: (pos) => post(`/api/queue/jump?pos=${pos}`),
 
   endpoints: () => request('/api/endpoints'),

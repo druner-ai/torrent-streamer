@@ -16,6 +16,7 @@ export default function AlbumGrid({
   loading,
   onOpen,
   onPlay,
+  onQueue,
   onToggleFavorite,
   isPlayingAlbum,
 }) {
@@ -46,6 +47,7 @@ export default function AlbumGrid({
           album={album}
           onOpen={onOpen}
           onPlay={onPlay}
+          onQueue={onQueue}
           onToggleFavorite={onToggleFavorite}
           isPlaying={isPlayingAlbum(album)}
         />
