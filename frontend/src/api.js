@@ -109,6 +109,9 @@ export const api = {
       `/api/sources?path=${encodeURIComponent(path)}&delete_albums=${deleteAlbums}`,
       { method: 'DELETE' },
     ),
+  backfillStatus: () => request('/api/library/backfill'),
+  backfillStart: () => post('/api/library/backfill'),
+  backfillStop: () => request('/api/library/backfill', { method: 'DELETE' }),
   scanSources: (path) => post('/api/sources/scan', { path: path || '' }),
   addManualEndpoint: (name, address) => post('/api/endpoints/manual', { name, address }),
   removeManualEndpoint: (name) =>

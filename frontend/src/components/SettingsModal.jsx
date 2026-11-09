@@ -24,6 +24,7 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [actBusy, setActBusy] = useState(null)
   const [sources, setSources] = useState([])
   const [scanState, setScanState] = useState(null)
+  const [backfill, setBackfill] = useState(null)
   const [newDir, setNewDir] = useState('')
   const [srcBusy, setSrcBusy] = useState(false)
   const [epName, setEpName] = useState('')
@@ -75,6 +76,10 @@ export default function SettingsModal({ open, onClose, notify }) {
         setScanState(d.scan || null)
       })
       .catch(() => {})
+    api
+      .backfillStatus()
+      .then(setBackfill)
+      .catch(() => {})
   }
 
   useEffect(() => {
@@ -117,6 +122,26 @@ export default function SettingsModal({ open, onClose, notify }) {
       notify?.(e.message, 'error')
     }
     setSrcBusy(false)
+    refreshSources()
+  }
+
+  const startBackfill = async () => {
+    try {
+      const r = await api.backfillStart()
+      notify?.(r.started ? 'Заполнение тегов запущено' : 'Все треки уже размечены', 'success')
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+    refreshSources()
+  }
+
+  const stopBackfill = async () => {
+    try {
+      await api.backfillStop()
+      notify?.('Остановлено — прогресс сохранён, можно продолжить позже', 'success')
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
     refreshSources()
   }
 
@@ -442,6 +467,52 @@ export default function SettingsModal({ open, onClose, notify }) {
               <p className="mt-1 text-[11px] text-text-muted">
                 Альбомы из медиапапок попадают в общую библиотеку и играют через тот же тракт.
               </p>
+            </div>
+
+            <div>
+              <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-text-muted">
+                Теги треков
+              </h3>
+              <div className="rounded-sm bg-surface-inset px-3 py-2.5">
+                <p className="text-[11px] leading-relaxed text-text-muted">
+                  Названия, длительности, жанры и годы читаются из аудиофайлов и заполняют
+                  всю библиотеку (вкладка «Треки», фильтры). Автоматически запускается после
+                  сканирования медиапапок; можно запустить вручную.
+                </p>
+                {backfill?.running ? (
+                  <div className="mt-2.5 flex items-center gap-3">
+                    <Loader2 size={14} className="shrink-0 animate-spin text-primary" />
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-text-secondary">
+                      {backfill.done} / {backfill.total} треков
+                      {backfill.album ? ` · ${backfill.album}` : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={stopBackfill}
+                      className="shrink-0 rounded-sm bg-surface-2 px-3 py-1.5 text-[12.5px] text-text-primary transition-colors hover:bg-surface-3"
+                    >
+                      Остановить
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-2.5 flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={startBackfill}
+                      disabled={srcBusy}
+                      className="shrink-0 rounded-sm bg-surface-2 px-3 py-1.5 text-[12.5px] text-text-primary transition-colors hover:bg-surface-3 disabled:opacity-40"
+                    >
+                      Заполнить теги
+                    </button>
+                    {backfill && backfill.done > 0 && (
+                      <span className="text-[11px] text-text-muted">
+                        прошлый прогон: обновлено {backfill.updated} из {backfill.total}
+                        {backfill.errors ? `, альбомов пропущено: ${backfill.errors}` : ''}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div>

@@ -573,7 +573,7 @@ def _schema(c):
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         album_id INTEGER, path TEXT, name TEXT, size INTEGER)""")
     for col in ("duration REAL", "title TEXT", "format TEXT", "year TEXT", "genre TEXT",
-                "gain_db REAL"):
+                "gain_db REAL", "tagged INTEGER DEFAULT 0"):
         with contextlib.suppress(sqlite3.OperationalError):
             c.execute(f"ALTER TABLE tracks ADD COLUMN {col}")
     c.execute("""CREATE TABLE IF NOT EXISTS favorites(
@@ -2371,6 +2371,163 @@ def _scan_worker(targets: list) -> None:
     finally:
         with _SCAN_LOCK:
             _SCAN_STATE.update(running=False, path=None)
+        _backfill_kick()  # после скана — автозаполнение тегов новых треков (фон)
+
+
+# ---------- бэкфилл тегов треков (названия/длительности/жанры по всей библиотеке) ----------
+_BACKFILL_STATE = {"running": False, "total": 0, "done": 0, "updated": 0,
+                   "errors": 0, "album": None}
+_BACKFILL_LOCK = threading.Lock()
+
+
+def _read_tags_full(path):
+    """Все теги одним открытием файла (дешевле _read_meta+_read_year_genre по сети).
+
+    Поддерживает Vorbis (FLAC) и ID3 (MP3/DSF): ключи обоих семейств.
+    """
+    try:
+        f = MutagenFile(path)
+        if f is None:
+            return {}
+        out = {}
+        if f.info is not None:
+            with contextlib.suppress(Exception):
+                out["duration"] = float(f.info.length)
+            bits = getattr(f.info, "bits_per_sample", None)
+            sr = getattr(f.info, "sample_rate", None)
+            if bits and sr:
+                out["format"] = f"{bits}/{sr // 1000}"
+            else:
+                br = getattr(f.info, "bitrate", None)
+                if br:
+                    out["format"] = f"{int(br // 1000)} kbps"
+        tags = getattr(f, "tags", None)
+        if tags:
+            def pick(*keys):
+                for k in keys:
+                    v = tags.get(k)
+                    if not v:
+                        continue
+                    if isinstance(v, (list, tuple)):
+                        v = v[0]
+                    text = getattr(v, "text", None)
+                    if isinstance(text, (list, tuple)):
+                        text = text[0] if text else None
+                    s = str(text if text is not None else v).strip()
+                    if s:
+                        return s
+                return None
+            for dst, keys in (("title", ("title", "TIT2")),
+                              ("artist", ("artist", "TPE1")),
+                              ("genre", ("genre", "TCON"))):
+                v = pick(*keys)
+                if v:
+                    out[dst] = v
+            y = pick("date", "year", "originaldate", "TDRC", "TYER")
+            if y:
+                out["year"] = y[:4]
+        return out
+    except Exception:  # noqa: BLE001 — метаданные не критичны
+        return {}
+
+
+def _backfill_kick() -> bool:
+    """Стартует воркер, если есть треки без тегов и он не идёт. Возвращает started."""
+    with _BACKFILL_LOCK:
+        if _BACKFILL_STATE["running"]:
+            return False
+        total = db().execute(
+            "SELECT COUNT(*) FROM tracks WHERE tagged IS NULL OR tagged=0").fetchone()[0]
+        if not total:
+            return False
+        _BACKFILL_STATE.update(running=True, total=total, done=0, updated=0,
+                               errors=0, album=None)
+    threading.Thread(target=_backfill_worker, daemon=True).start()
+    return True
+
+
+def _backfill_worker() -> None:
+    try:
+        c = db()
+        albums = c.execute(
+            """SELECT DISTINCT a.id, a.hash, a.name, a.artist FROM albums a
+               JOIN tracks t ON t.album_id = a.id
+               WHERE t.tagged IS NULL OR t.tagged=0 ORDER BY a.id""").fetchall()
+        qb = None
+        for a in albums:
+            if not _BACKFILL_STATE["running"]:
+                return
+            _BACKFILL_STATE["album"] = (a["name"] or "")[:60]
+            if _is_local(a["hash"]):
+                save_path = _local_dir(a["hash"])
+            else:
+                save_path = None
+                try:
+                    if qb is None:
+                        qb = QB()
+                    info = qb.find_by_hash(a["hash"])
+                    save_path = info.get("save_path") if info else None
+                except Exception:  # noqa: BLE001 — qbt недоступен: torrent-альбомы пропускаем
+                    qb = None
+            tracks = c.execute(
+                """SELECT id, path, title, duration, format, year, genre FROM tracks
+                   WHERE album_id=? AND (tagged IS NULL OR tagged=0) ORDER BY path""",
+                (a["id"],)).fetchall()
+            if not save_path:
+                # путь не резолвится (qbt down / торрент удалён) — НЕ помечаем, повторим позже
+                _BACKFILL_STATE["done"] += len(tracks)
+                _BACKFILL_STATE["errors"] += 1
+                continue
+            artist_tag = None
+            for i, t in enumerate(tracks):
+                if not _BACKFILL_STATE["running"]:
+                    c.commit()
+                    return
+                tags = _read_tags_full(os.path.join(save_path, t["path"]))
+                artist_tag = artist_tag or tags.get("artist")
+                c.execute(
+                    "UPDATE tracks SET title=?, duration=?, format=?, year=?, genre=?,"
+                    " tagged=1 WHERE id=?",
+                    (tags.get("title") or t["title"],
+                     tags.get("duration", t["duration"]),
+                     tags.get("format") or t["format"],
+                     tags.get("year") or t["year"],
+                     tags.get("genre") or t["genre"], t["id"]))
+                if tags:
+                    _BACKFILL_STATE["updated"] += 1
+                _BACKFILL_STATE["done"] += 1
+                if i % 50 == 49:
+                    c.commit()
+            if artist_tag and not a["artist"]:
+                c.execute("UPDATE albums SET artist=? WHERE id=?", (artist_tag, a["id"]))
+            c.commit()
+    except Exception as e:  # noqa: BLE001 — воркер не должен ронять процесс
+        _BACKFILL_STATE["errors"] += 1
+        print(f"backfill: {e}")
+    finally:
+        with _BACKFILL_LOCK:
+            _BACKFILL_STATE.update(running=False, album=None)
+
+
+@app.get("/api/library/backfill")
+def backfill_status():
+    return dict(_BACKFILL_STATE)
+
+
+@app.post("/api/library/backfill")
+def backfill_start():
+    with _BACKFILL_LOCK:
+        if _BACKFILL_STATE["running"]:
+            raise HTTPException(409, "бэкфилл уже идёт")
+    started = _backfill_kick()
+    return {"ok": True, "started": started,
+            **({"reason": "нет треков без тегов"} if not started else {})}
+
+
+@app.delete("/api/library/backfill")
+def backfill_stop():
+    _BACKFILL_STATE["running"] = False
+    return {"ok": True}
 
 
 class SourceReq(BaseModel):

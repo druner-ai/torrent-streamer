@@ -1977,3 +1977,111 @@ def test_library_tracks_filters_and_index(tmp_path):
         assert any(f["v"] == "Jazz" and f["n"] == 3 for f in d["facets"]["genres"])
         assert {f["v"] for f in d["facets"]["formats"]} == {"FLAC", "MP3"}
         assert {f["v"] for f in d["facets"]["years"]} == {"1959", "1957"}
+
+
+def test_backfill_worker_fills_tags_and_marks(tmp_path, monkeypatch):
+    """Бэкфилл: читает теги, помечает tagged=1, заполняет artist альбома, возобновляем."""
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        media = tmp_path / "music" / "Album"
+        media.mkdir(parents=True)
+        c = main.db()
+        cur = c.execute(
+            "INSERT INTO albums(hash,name,status,added_at,artist) VALUES(?,?,?,?,?)",
+            (f"local:{tmp_path / 'music' / 'Album'}", "Album", "complete", 1, None))
+        aid = cur.lastrowid
+        c.executemany("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                      [(aid, "01.flac", "01.flac", 1), (aid, "02.flac", "02.flac", 1)])
+        c.commit()
+
+        calls = []
+
+        def fake_tags(path):
+            calls.append(path)
+            return {"title": f"T{len(calls)}", "duration": 100.0 + len(calls),
+                    "artist": "Miles Davis", "format": "24/96", "year": "1959",
+                    "genre": "Jazz"}
+
+        monkeypatch.setattr(main, "_read_tags_full", fake_tags)
+        main._BACKFILL_STATE.update(running=True, total=2, done=0, updated=0,
+                                    errors=0, album=None)
+        main._backfill_worker()
+
+        rows = c.execute("SELECT title, duration, format, year, genre, tagged"
+                         " FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
+        assert rows[0]["title"] == "T1" and rows[0]["duration"] == 101.0
+        assert rows[0]["tagged"] == 1 and rows[0]["genre"] == "Jazz"
+        assert rows[1]["title"] == "T2" and rows[1]["tagged"] == 1
+        # artist альбома заполнен из тегов
+        assert c.execute("SELECT artist FROM albums WHERE id=?", (aid,)).fetchone()["artist"] \
+            == "Miles Davis"
+        assert main._BACKFILL_STATE["running"] is False
+        assert main._BACKFILL_STATE["updated"] == 2
+        # повторный запуск: размеченных треков не осталось
+        assert not main._backfill_kick()
+
+
+def test_backfill_worker_skips_unresolvable_and_untagged_files(tmp_path, monkeypatch):
+    """Файл без тегов помечается (не вечный повтор); альбом без пути — НЕ помечается."""
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        c = main.db()
+        # local-альбом с отсутствующим файлом → _read_tags_full вернёт {}
+        cur = c.execute(
+            "INSERT INTO albums(hash,name,status,added_at) VALUES(?,?,?,?)",
+            (f"local:{tmp_path / 'gone'}", "Gone", "complete", 1))
+        a1 = cur.lastrowid
+        c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                  (a1, "01.flac", "01.flac", 1))
+        # torrent-альбом → QB недоступен (мок кидает) → save_path None → не помечать
+        cur = c.execute(
+            "INSERT INTO albums(hash,name,status,added_at) VALUES(?,?,?,?)",
+            ("torrent_hash_1", "Torrent", "complete", 1))
+        a2 = cur.lastrowid
+        c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                  (a2, "01.flac", "01.flac", 1))
+        c.commit()
+
+        monkeypatch.setattr(main, "_read_tags_full", lambda p: {})
+
+        class QBFail:
+            def __init__(self):
+                raise RuntimeError("qbt down")
+
+        monkeypatch.setattr(main, "QB", QBFail)
+        main._BACKFILL_STATE.update(running=True, total=2, done=0, updated=0,
+                                    errors=0, album=None)
+        main._backfill_worker()
+
+        assert c.execute("SELECT tagged FROM tracks WHERE album_id=?", (a1,)).fetchone()["tagged"] == 1
+        row = c.execute("SELECT tagged FROM tracks WHERE album_id=?", (a2,)).fetchone()
+        assert row["tagged"] in (0, None)  # не размечен — повторится, когда qbt оживёт
+        assert main._BACKFILL_STATE["errors"] >= 1
+
+
+def test_backfill_endpoints(tmp_path, monkeypatch):
+    """POST старт (409 при повторе), GET статус, DELETE стоп."""
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        c = main.db()
+        cur = c.execute("INSERT INTO albums(hash,name,status,added_at) VALUES(?,?,?,?)",
+                        ("h1", "A", "complete", 1))
+        c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                  (cur.lastrowid, "01.flac", "01.flac", 1))
+        c.commit()
+        main._BACKFILL_STATE.update(running=False, total=0, done=0, updated=0,
+                                    errors=0, album=None)
+        started = []
+        monkeypatch.setattr(main.threading, "Thread",
+                            lambda **kw: started.append(kw) or Mock())
+        r = client.post("/api/library/backfill")
+        assert r.status_code == 200 and r.json()["started"] is True
+        assert len(started) == 1
+        # kick выставил running=True (мок-поток не стартовал) → повтор = 409
+        assert client.post("/api/library/backfill").status_code == 409
+        s = client.get("/api/library/backfill").json()
+        assert s["running"] is True and s["total"] == 1
+        assert client.delete("/api/library/backfill").json()["ok"] is True
+        assert main._BACKFILL_STATE["running"] is False
+        # всё размечено? нет → kick снова возможен; после пометки — started=False
+        c.execute("UPDATE tracks SET tagged=1")
+        c.commit()
+        r2 = client.post("/api/library/backfill")
+        assert r2.status_code == 200 and r2.json()["started"] is False
