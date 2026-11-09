@@ -725,6 +725,13 @@ def test_sources_crud_and_scan(tmp_path):
     _reset_oaat_state()
 
 
+def test_parse_folder_album_numeric_prefix():
+    """'02 - Song' — номер трека не становится артистом."""
+    assert main._parse_folder_album("02 - The Nearness Of You") == (None, "02 - The Nearness Of You")
+    assert main._parse_folder_album("Basia - Time And Tide 1987") == ("Basia", "Time And Tide 1987")
+    assert main._parse_folder_album("Cauldron") == (None, "Cauldron")
+
+
 def test_scan_artist_from_tags(tmp_path):
     """Папка без «Artist - » в имени: артист подтягивается из тегов."""
     _reset_oaat_state()

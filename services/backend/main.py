@@ -2165,10 +2165,14 @@ _SCAN_LOCK = threading.Lock()
 
 
 def _parse_folder_album(dirname: str):
-    """'Basia - Time And Tide 1987(LP)' → ('Basia', 'Time And Tide 1987(LP)')."""
+    """'Basia - Time And Tide 1987(LP)' → ('Basia', 'Time And Tide 1987(LP)').
+
+    Левая часть не берётся как артист, если это номер/мусор ('02 - Song')."""
     m = re.match(r"^(.+?)\s*[-–—]\s*(.+)$", dirname)
     if m:
-        return m.group(1).strip(), m.group(2).strip()
+        left = m.group(1).strip()
+        if not re.fullmatch(r"[\d\W_]+", left) and len(left) > 1:
+            return left, m.group(2).strip()
     return None, dirname
 
 
@@ -2180,8 +2184,9 @@ def _upsert_local_album(c, album_dir: str, audio) -> bool:
     audio.sort(key=lambda e: e.name)
     row = c.execute("SELECT id, artist FROM albums WHERE hash=?", (h,)).fetchone()
     created = row is None
-    # имя папки не дало артиста (или альбом уже лежит без артиста) — берём из тегов
-    if (created and not artist) or (row is not None and not row["artist"]):
+    # артист: теги приоритетнее имени папки (папка — только fallback).
+    # Читаем, если создаём альбом или существующий лежит без артиста.
+    if created or (row is not None and not row["artist"]):
         try:
             _, _, tag_artist, _, _ = _read_meta(audio[0].path)
             if tag_artist:
