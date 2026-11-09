@@ -1889,6 +1889,17 @@ def _file_state(progress: float, torrent_state: str) -> str:
     return "queued"
 
 
+def _source_label(hash_) -> str | None:
+    """Метка источника локального альбома: basename медиапапки, в которой он лежит."""
+    d = _local_dir(hash_)
+    best = None
+    for root in _media_dirs():
+        rr = root.rstrip("/")
+        if (d == rr or d.startswith(rr + "/")) and (best is None or len(rr) > len(best)):
+            best = rr
+    return os.path.basename(best) if best else None
+
+
 @app.get("/api/albums")
 def albums():
     c = db()
@@ -1900,15 +1911,34 @@ def albums():
     except HTTPException:
         qb = None  # qbt недоступен — библиотека отдаётся без live-прогресса
     favs = {row["album_id"] for row in c.execute("SELECT album_id FROM favorites")}
+    root_ok: dict = {}
+
+    def _dir_available(d: str) -> bool:
+        # один stat на корень медиапапки, а не на каждый альбом (SMB-монтирования
+        # делают массовые stat дорогими)
+        for root in _media_dirs():
+            rr = root.rstrip("/")
+            if d == rr or d.startswith(rr + "/"):
+                if rr not in root_ok:
+                    root_ok[rr] = os.path.isdir(rr)
+                return root_ok[rr]
+        return os.path.isdir(d)
+
     for r in rows:
+        local = _is_local(r["hash"])
         info = None
-        if qb is not None:
+        if qb is not None and not local:
             try:
                 info = qb.find_by_hash(r["hash"])
             except requests.RequestException:
                 qb = None  # qbt отвалился посреди цикла — не роняем выдачу
-        status = _torrent_state(info["state"]) if info else (r["status"] or "downloading")
-        progress = info["progress"] if info else 0
+        if local:
+            available = _dir_available(_local_dir(r["hash"]))
+            status = "complete" if available else "missing"
+            progress = 100.0 if available else 0.0
+        else:
+            status = _torrent_state(info["state"]) if info else (r["status"] or "downloading")
+            progress = round((info["progress"] if info else 0) * 100, 1)
         year = genre = fmt = None
         for t in c.execute("""SELECT year, genre, format FROM tracks
                               WHERE album_id=? AND (year IS NOT NULL OR genre IS NOT NULL
@@ -1917,10 +1947,12 @@ def albums():
             year, genre, fmt = t["year"], t["genre"], t["format"]
         release_key = r["release_key"] or _release_key(r["artist"], r["name"])
         out.append({"id": r["id"], "hash": r["hash"], "name": r["name"],
-                    "status": status, "progress": round(progress * 100, 1),
+                    "status": status, "progress": progress,
                     "tracks": r["n"], "artist": r["artist"], "cover_url": r["cover_url"],
                     "year": year, "genre": genre, "format": fmt,
-                    "release_key": release_key, "favorite": r["id"] in favs})
+                    "release_key": release_key, "favorite": r["id"] in favs,
+                    "origin": "folder" if local else "torrent",
+                    "source_label": _source_label(r["hash"]) if local else None})
     return out
 
 @app.post("/api/albums/{aid}/favorite")
@@ -1962,18 +1994,27 @@ def album_files(aid: int):
     tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
     save_path = None
     torrent_state = None
-    try:
-        qb = QB()
-        files = {f["name"]: f for f in qb.files(a["hash"])}
-        info = qb.find_by_hash(a["hash"])
-        save_path = info.get("save_path") if info else None
-        torrent_state = info.get("state") if info else None
-    except Exception:  # noqa: BLE001 — торрент не найден / qbt недоступен
+    local = _is_local(a["hash"])
+    if local:
+        save_path = _local_dir(a["hash"])
         files = {}
+    else:
+        try:
+            qb = QB()
+            files = {f["name"]: f for f in qb.files(a["hash"])}
+            info = qb.find_by_hash(a["hash"])
+            save_path = info.get("save_path") if info else None
+            torrent_state = info.get("state") if info else None
+        except Exception:  # noqa: BLE001 — торрент не найден / qbt недоступен
+            files = {}
     out = []
     for idx, t in enumerate(tracks):
         f = files.get(t["path"])
-        progress = f["progress"] if f else 0.0
+        if local:
+            abs_local = os.path.join(save_path or "", t["path"])
+            progress = 1.0 if os.path.exists(abs_local) else 0.0
+        else:
+            progress = f["progress"] if f else 0.0
         ready = bool(progress >= 1.0)
         if ready and save_path:
             abs_path = os.path.join(save_path, t["path"])
@@ -2036,9 +2077,12 @@ def album_cover(aid: int):
         return Response(content=cache_file.read_bytes(), media_type="image/jpeg")
     data = mime = None
     try:
-        qb = QB()
-        info = qb.find_by_hash(a["hash"])
-        save_path = info.get("save_path") if info else None
+        if _is_local(a["hash"]):
+            save_path = _local_dir(a["hash"])
+        else:
+            qb = QB()
+            info = qb.find_by_hash(a["hash"])
+            save_path = info.get("save_path") if info else None
         tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
         # 1) embedded обложка из первого читаемого трека
         for t in tracks:
@@ -2075,13 +2119,218 @@ def delete_album(id: int, remove_torrent: bool = False):
     a = c.execute("SELECT * FROM albums WHERE id=?", (id,)).fetchone()
     if not a:
         raise HTTPException(404, "альбом не найден")
-    if remove_torrent:
+    if remove_torrent and not _is_local(a["hash"]):
         qb = QB()
         qb.delete(a["hash"])
     c.execute("DELETE FROM tracks WHERE album_id=?", (id,))
     c.execute("DELETE FROM albums WHERE id=?", (id,))
     c.commit()
     return {"ok": True, "id": id}
+
+_LOCAL_PREFIX = "local:"
+
+
+def _is_local(hash_) -> bool:
+    """Локальный альбом (медиапапка USB/NAS) хранится с hash='local:<путь к папке>'."""
+    return str(hash_).startswith(_LOCAL_PREFIX)
+
+
+def _local_dir(hash_) -> str:
+    return str(hash_)[len(_LOCAL_PREFIX):]
+
+
+# ---------- медиапапки (USB / сетевые источники) ----------
+AUDIO_EXTS = {".flac", ".dsf", ".dff", ".wav", ".mp3", ".m4a", ".aac", ".ogg",
+              ".opus", ".ape", ".wv", ".aiff", ".aif", ".mp4", ".m4b"}
+_SKIP_DIRS = {"@eadir", "#recycle", "@tmp", "lost+found", ".spotlight-v100",
+              ".trashes", ".fseventsd", ".synologyworkingdir", ".appledouble",
+              "system volume information", "$recycle.bin"}
+
+
+def _media_dirs() -> list:
+    """Список корней медиапапок из настроек (JSON-массив абсолютных путей)."""
+    raw = _get_setting("media_dirs")
+    if not raw:
+        return []
+    try:
+        dirs = json.loads(raw)
+    except ValueError:
+        return []
+    return [d for d in dirs if isinstance(d, str) and d.startswith("/")]
+
+
+_SCAN_STATE = {"running": False, "path": None, "scanned": 0,
+               "added": 0, "updated": 0, "errors": 0}
+_SCAN_LOCK = threading.Lock()
+
+
+def _parse_folder_album(dirname: str):
+    """'Basia - Time And Tide 1987(LP)' → ('Basia', 'Time And Tide 1987(LP)')."""
+    m = re.match(r"^(.+?)\s*[-–—]\s*(.+)$", dirname)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return None, dirname
+
+
+def _upsert_local_album(c, album_dir: str, audio) -> bool:
+    """Создать/обновить локальный альбом. Возвращает True, если создан новый."""
+    h = _LOCAL_PREFIX + album_dir
+    dirname = os.path.basename(album_dir)
+    artist, name = _parse_folder_album(dirname)
+    audio.sort(key=lambda e: e.name)
+    row = c.execute("SELECT id FROM albums WHERE hash=?", (h,)).fetchone()
+    created = row is None
+    if created:
+        cur = c.execute(
+            "INSERT INTO albums(hash,name,artist,status,added_at) VALUES(?,?,?,?,?)",
+            (h, name, artist, "complete", int(time.time())))
+        aid = cur.lastrowid
+    else:
+        aid = row["id"]
+    existing = {t["path"]: t["size"] for t in
+                c.execute("SELECT path,size FROM tracks WHERE album_id=?", (aid,))}
+    names = set()
+    for e in audio:
+        names.add(e.name)
+        try:
+            size = e.stat().st_size
+        except OSError:
+            size = 0
+        if e.name in existing and existing[e.name] == size:
+            continue
+        if e.name in existing:
+            c.execute("UPDATE tracks SET size=? WHERE album_id=? AND path=?",
+                      (size, aid, e.name))
+        else:
+            c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                      (aid, e.name, e.name, size))
+    for gone in set(existing) - names:
+        c.execute("DELETE FROM tracks WHERE album_id=? AND path=?", (aid, gone))
+    c.commit()
+    return created
+
+
+def _scan_root(root: str) -> None:
+    """Обход медиапапки: альбом = каталог, в котором лежат аудиофайлы."""
+    root = os.path.abspath(root)
+    c = db()
+    stack = [(root, 0)]
+    scanned = 0
+    while stack:
+        if not _SCAN_STATE["running"]:
+            return  # отменён
+        d, lvl = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                entries = list(it)
+        except OSError:
+            _SCAN_STATE["errors"] += 1
+            continue
+        scanned += 1
+        audio = []
+        for e in entries:
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    if (e.name.lower() not in _SKIP_DIRS
+                            and not e.name.startswith(".") and lvl < 6):
+                        stack.append((e.path, lvl + 1))
+                elif e.is_file(follow_symlinks=False) and \
+                        os.path.splitext(e.name)[1].lower() in AUDIO_EXTS:
+                    audio.append(e)
+            except OSError:
+                continue
+        if audio:
+            try:
+                if _upsert_local_album(c, d, audio):
+                    _SCAN_STATE["added"] += 1
+                else:
+                    _SCAN_STATE["updated"] += 1
+            except Exception as e:  # noqa: BLE001 — битая папка не роняет скан
+                print(f"[scan] {d}: {e}", flush=True)
+                _SCAN_STATE["errors"] += 1
+        if scanned % 25 == 0:
+            _SCAN_STATE["scanned"] = scanned
+
+
+def _scan_worker(targets: list) -> None:
+    try:
+        for root in targets:
+            if not _SCAN_STATE["running"]:
+                break
+            _SCAN_STATE["path"] = root
+            _scan_root(root)
+    finally:
+        with _SCAN_LOCK:
+            _SCAN_STATE.update(running=False, path=None)
+
+
+class SourceReq(BaseModel):
+    path: str = ""
+
+
+@app.get("/api/sources")
+def sources_get():
+    c = db()
+    out = []
+    for d in _media_dirs():
+        like = _LOCAL_PREFIX + d.rstrip("/") + "/%"
+        n = c.execute("SELECT COUNT(*) FROM albums WHERE hash LIKE ?", (like,)).fetchone()[0]
+        out.append({"path": d, "exists": os.path.isdir(d), "albums": n})
+    return {"sources": out, "scan": dict(_SCAN_STATE)}
+
+
+@app.post("/api/sources")
+def sources_add(req: SourceReq):
+    p = os.path.abspath(req.path or "")
+    if not p.startswith("/") or p == "/":
+        raise HTTPException(400, "нужен абсолютный путь к папке")
+    if not os.path.isdir(p):
+        raise HTTPException(400, f"папка недоступна: {p} (проверьте монтирование)")
+    dirs = _media_dirs()
+    if p not in dirs:
+        dirs.append(p)
+        _set_setting("media_dirs", json.dumps(dirs))
+    return {"ok": True, "sources": dirs}
+
+
+@app.delete("/api/sources")
+def sources_remove(path: str, delete_albums: bool = True):
+    p = os.path.abspath(path)
+    dirs = _media_dirs()
+    if p not in dirs:
+        raise HTTPException(404, "такой медиапапки нет в списке")
+    dirs.remove(p)
+    _set_setting("media_dirs", json.dumps(dirs))
+    removed = 0
+    if delete_albums:
+        c = db()
+        like = _LOCAL_PREFIX + p.rstrip("/") + "/%"
+        ids = [r["id"] for r in c.execute(
+            "SELECT id FROM albums WHERE hash LIKE ?", (like,))]
+        for aid in ids:
+            c.execute("DELETE FROM tracks WHERE album_id=?", (aid,))
+        c.execute("DELETE FROM albums WHERE hash LIKE ?", (like,))
+        c.commit()
+        removed = len(ids)
+    return {"ok": True, "sources": dirs, "albums_removed": removed}
+
+
+@app.post("/api/sources/scan")
+def sources_scan(req: SourceReq | None = None):
+    with _SCAN_LOCK:
+        if _SCAN_STATE["running"]:
+            raise HTTPException(409, "сканирование уже идёт")
+        targets = [os.path.abspath(req.path)] if req and req.path else _media_dirs()
+        if not targets:
+            raise HTTPException(400, "нет медиапапок для сканирования")
+        missing = [t for t in targets if not os.path.isdir(t)]
+        if missing:
+            raise HTTPException(400, f"недоступно: {', '.join(missing)}")
+        _SCAN_STATE.update(running=True, path=targets[0], scanned=0,
+                           added=0, updated=0, errors=0)
+    threading.Thread(target=_scan_worker, args=(targets,), daemon=True).start()
+    return {"ok": True, "targets": targets}
+
 
 def _current_tracks(aid):
     c = db()
@@ -2091,6 +2340,13 @@ def _current_tracks(aid):
     tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
     if not tracks:
         raise HTTPException(400, "в альбоме нет треков")
+    if _is_local(a["hash"]):
+        save_path = _local_dir(a["hash"])
+        if not os.path.isdir(save_path):
+            raise HTTPException(500, f"медиапапка недоступна: {save_path}")
+        meta = {"name": a["name"], "artist": a["artist"], "cover_url": a["cover_url"],
+                "hash": a["hash"]}
+        return tracks, save_path, meta
     qb = QB()
     info = qb.find_by_hash(a["hash"])
     save_path = info["save_path"] if info else None
@@ -2357,12 +2613,13 @@ def _start_track(aid, idx, offset=0.0):
     track = tracks[idx]
     # приоритизируем текущий + следующий трек (6), остальные аудио — 1 (докачаются позже),
     # не-аудио — 0: нужный файл качается первым, но весь альбом в итоге докачается.
-    # best-effort: не блокирует play.
+    # best-effort: не блокирует play. Для локальных альбомов (медиапапки) не нужно.
     with contextlib.suppress(Exception):  # торрент может быть ещё не найден / удалён
-        audio_names = {t["path"] for t in tracks}
-        window = {tracks[i]["path"] for i in (idx, idx + 1) if 0 <= i < len(tracks)}
-        if window:
-            QB().prioritize_window(meta["hash"], window, audio_names)
+        if not _is_local(meta["hash"]):
+            audio_names = {t["path"] for t in tracks}
+            window = {tracks[i]["path"] for i in (idx, idx + 1) if 0 <= i < len(tracks)}
+            if window:
+                QB().prioritize_window(meta["hash"], window, audio_names)
     abs_path = os.path.join(save_path, track["path"])
     # не даём ffmpeg упасть на недокачанном файле — явная ошибка вместо «no packets»
     if track["size"] and os.path.exists(abs_path) and os.path.getsize(abs_path) < track["size"]:

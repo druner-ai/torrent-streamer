@@ -1,4 +1,4 @@
-import { Loader2, X } from 'lucide-react'
+import { Loader2, RefreshCw, Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 
@@ -22,6 +22,63 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [updLatest, setUpdLatest] = useState(null)
   const [updBusy, setUpdBusy] = useState(null)
   const [actBusy, setActBusy] = useState(null)
+  const [sources, setSources] = useState([])
+  const [scanState, setScanState] = useState(null)
+  const [newDir, setNewDir] = useState('')
+  const [srcBusy, setSrcBusy] = useState(false)
+
+  const refreshSources = () => {
+    api
+      .sources()
+      .then((d) => {
+        setSources(d.sources || [])
+        setScanState(d.scan || null)
+      })
+      .catch(() => {})
+  }
+
+  useEffect(() => {
+    if (!open) return
+    refreshSources()
+    const t = setInterval(refreshSources, 2500)
+    return () => clearInterval(t)
+  }, [open])
+
+  const addSrc = async () => {
+    const p = newDir.trim()
+    if (!p) return
+    setSrcBusy(true)
+    try {
+      await api.addSource(p)
+      setNewDir('')
+      notify?.('Медиапапка добавлена', 'success')
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+    setSrcBusy(false)
+    refreshSources()
+  }
+
+  const scanSrc = async (path) => {
+    try {
+      await api.scanSources(path)
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+    refreshSources()
+  }
+
+  const delSrc = async (path) => {
+    setSrcBusy(true)
+    try {
+      const r = await api.removeSource(path, true)
+      notify?.(`Медиапапка убрана, альбомов удалено: ${r.albums_removed}`, 'success')
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+    setSrcBusy(false)
+    refreshSources()
+  }
 
   useEffect(() => {
     if (!open) return
@@ -269,6 +326,75 @@ export default function SettingsModal({ open, onClose, notify }) {
                 autoComplete="new-password"
                 className="h-9 w-full rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
               />
+            </div>
+
+            <div>
+              <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-text-muted">
+                Медиапапки (USB / сетевые)
+              </h3>
+              {sources.map((s) => (
+                <div
+                  key={s.path}
+                  className="mb-2 flex items-center gap-2 rounded-sm bg-surface-inset px-3 py-2"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono text-[12px] text-text-primary">
+                      {s.path}
+                    </span>
+                    <span className="block text-[11px] text-text-muted">
+                      {s.exists ? `${s.albums} альбомов` : 'недоступна'}
+                      {scanState?.running && scanState.path === s.path
+                        ? ` · сканирование: ${scanState.scanned} папок, +${scanState.added}`
+                        : ''}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => scanSrc(s.path)}
+                    disabled={!s.exists || scanState?.running || srcBusy}
+                    className="rounded-sm p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-primary disabled:opacity-40"
+                    aria-label="Сканировать"
+                    title="Сканировать"
+                  >
+                    <RefreshCw
+                      size={14}
+                      className={
+                        scanState?.running && scanState.path === s.path ? 'animate-spin' : ''
+                      }
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => delSrc(s.path)}
+                    disabled={srcBusy}
+                    className="rounded-sm p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-red-400"
+                    aria-label="Удалить медиапапку"
+                    title="Убрать источник (его альбомы удалятся из библиотеки)"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+              <div className="flex gap-2">
+                <input
+                  value={newDir}
+                  onChange={(e) => setNewDir(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addSrc()}
+                  placeholder="/mnt/… — путь на сервере (USB / NAS)"
+                  className="h-9 min-w-0 flex-1 rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={addSrc}
+                  disabled={srcBusy || !newDir.trim()}
+                  className="h-9 shrink-0 rounded-sm bg-surface-2 px-3 text-[13px] text-text-primary transition-colors hover:bg-surface-3 disabled:opacity-40"
+                >
+                  Добавить
+                </button>
+              </div>
+              <p className="mt-1 text-[11px] text-text-muted">
+                Альбомы из медиапапок попадают в общую библиотеку и играют через тот же тракт.
+              </p>
             </div>
 
             <div>

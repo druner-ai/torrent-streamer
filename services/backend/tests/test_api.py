@@ -671,6 +671,103 @@ def test_queue_get_enriched_without_qbt(tmp_path):
     _reset_oaat_state()
 
 
+def test_sources_crud_and_scan(tmp_path):
+    """Медиапапки: добавление → скан → альбомы в общей библиотеке → удаление источника."""
+    _reset_oaat_state()
+    media = tmp_path / "media"
+    alb = media / "Basia - Time And Tide 1987"
+    alb.mkdir(parents=True)
+    (alb / "01 - Promises.flac").write_bytes(b"x" * 10)
+    (alb / "02 - Run For Cover.flac").write_bytes(b"x" * 20)
+    (media / "notes.txt").write_text("не аудио — игнорируется")
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        r = client.post("/api/sources", json={"path": str(media)})
+        assert r.status_code == 200
+        assert r.json()["sources"] == [str(media)]
+        src = client.get("/api/sources").json()["sources"][0]
+        assert src["exists"] is True and src["albums"] == 0
+
+        # синхронный вызов сканера (в обход потока — детерминированно)
+        main._SCAN_STATE.update(running=True, path=str(media), scanned=0,
+                                added=0, updated=0, errors=0)
+        main._scan_root(str(media))
+        main._SCAN_STATE["running"] = False
+        assert main._SCAN_STATE["added"] == 1
+        assert main._SCAN_STATE["errors"] == 0
+
+        folders = [a for a in client.get("/api/albums").json() if a["origin"] == "folder"]
+        assert len(folders) == 1
+        a = folders[0]
+        assert a["artist"] == "Basia"
+        assert a["name"] == "Time And Tide 1987"
+        assert a["status"] == "complete" and a["progress"] == 100.0
+        assert a["tracks"] == 2 and a["source_label"] == "media"
+
+        # files: локальные треки сразу ready, без qbt
+        files = client.get(f"/api/albums/{a['id']}/files").json()["files"]
+        assert len(files) == 2
+        assert all(f["ready"] and f["progress"] == 1.0 for f in files)
+        assert files[0]["title"] == "Promises"  # _clean_track_name от имени файла
+
+        # повторный скан идемпотентен
+        main._SCAN_STATE.update(running=True, path=str(media), scanned=0,
+                                added=0, updated=0, errors=0)
+        main._scan_root(str(media))
+        main._SCAN_STATE["running"] = False
+        assert main._SCAN_STATE["added"] == 0 and main._SCAN_STATE["updated"] == 1
+        assert client.get("/api/sources").json()["sources"][0]["albums"] == 1
+
+        # удаление источника убирает его альбомы
+        r = client.delete(f"/api/sources?path={media}&delete_albums=true")
+        assert r.json()["albums_removed"] == 1
+        assert client.get("/api/sources").json()["sources"] == []
+        assert all(x["origin"] != "folder" for x in client.get("/api/albums").json())
+    _reset_oaat_state()
+
+
+def test_sources_add_rejects_missing_dir(tmp_path):
+    _reset_oaat_state()
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        r = client.post("/api/sources", json={"path": str(tmp_path / "nope")})
+        assert r.status_code == 400
+        r = client.post("/api/sources", json={"path": "relative/path"})
+        assert r.status_code == 400
+    _reset_oaat_state()
+
+
+def test_play_local_album_without_qbt(tmp_path):
+    """Локальный альбом играет без обращения к qBittorrent."""
+    _reset_oaat_state()
+    alb = tmp_path / "m" / "Artist - Album"
+    alb.mkdir(parents=True)
+    f = alb / "01 - Song.flac"
+    f.write_bytes(b"RIFFfake")
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), \
+         patch.object(main, "_predecode"), \
+         patch.object(main, "_wav_codec_for", return_value="pcm_s16le"), \
+         patch.object(main.subprocess, "run") as run, \
+         patch.object(main, "_ts_cmd") as ts:
+        c = main.db()
+        cur = c.execute("INSERT INTO albums(hash,name,artist,status,added_at) VALUES(?,?,?,?,?)",
+                        ("local:" + str(alb), "Album", "Artist", "complete", 0))
+        aid = cur.lastrowid
+        c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                  (aid, "01 - Song.flac", "01 - Song.flac", f.stat().st_size))
+        c.commit()
+        c.close()
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        ts.return_value = {"ok": True, "state": "playing", "duration": 10.0}
+
+        r = client.post(f"/api/albums/{aid}/play")
+        assert r.status_code == 200
+        ffmpeg_calls = [x for x in run.call_args_list if x.args and x.args[0][0] == "ffmpeg"]
+        assert len(ffmpeg_calls) == 1
+        assert str(f) in ffmpeg_calls[0].args[0]  # декодируется файл из медиапапки
+        assert ts.call_args.args[0]["path"] == f"/tmp/oaat_stream_{aid}_0.wav"
+    _reset_oaat_state()
+
+
 def test_queue_add_idle_autostart_failure_keeps_track():
     _reset_oaat_state()
     with patch.object(main, "_start_track",

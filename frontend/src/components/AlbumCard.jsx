@@ -57,6 +57,12 @@ export default function AlbumCard({ album, onOpen, onPlay, onQueue, onToggleFavo
           </span>
         )}
 
+        {album.origin === 'folder' && (
+          <span className="absolute bottom-2 left-2 rounded-xs bg-black/55 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-text-primary backdrop-blur-sm">
+            {album.source_label || 'папка'}
+          </span>
+        )}
+
         <button
           type="button"
           onClick={(e) => {

@@ -94,6 +94,14 @@ export const api = {
   setupStatus: () => request('/api/setup/status'),
 
   queue: () => request('/api/queue'),
+  sources: () => request('/api/sources'),
+  addSource: (path) => post('/api/sources', { path }),
+  removeSource: (path, deleteAlbums = true) =>
+    request(
+      `/api/sources?path=${encodeURIComponent(path)}&delete_albums=${deleteAlbums}`,
+      { method: 'DELETE' },
+    ),
+  scanSources: (path) => post('/api/sources/scan', { path: path || '' }),
   addToQueue: (albumId, trackIndex, mode) =>
     post('/api/queue', { album_id: albumId, track_index: trackIndex, mode }),
   removeQueue: (pos) => request(`/api/queue?pos=${pos}`, { method: 'DELETE' }),
