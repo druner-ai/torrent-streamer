@@ -27,6 +27,13 @@ const post = (path, body) =>
 
 export const api = {
   albums: () => request('/api/albums'),
+  libraryTracks: (params = {}) => {
+    const qs = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== '' && v != null && v !== false) qs.set(k, String(v))
+    }
+    return request(`/api/library/tracks?${qs}`)
+  },
   albumFiles: (id) => request(`/api/albums/${id}/files`),
   coverUrl: (id) => `/api/albums/${id}/cover`,
   playAlbum: (id) => post(`/api/albums/${id}/play`),

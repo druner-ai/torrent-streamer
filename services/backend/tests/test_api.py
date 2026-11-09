@@ -1928,3 +1928,52 @@ def test_mdns_register_and_unregister(monkeypatch):
     assert len(main._mdns_state) == 1
     main._mdns_unregister()
     assert main._mdns_state == []
+
+
+def test_library_tracks_filters_and_index(tmp_path):
+    """Вкладка «Треки»: фильтры, track_index, пагинация, facets."""
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        c = main.db()
+        cur = c.execute("INSERT INTO albums(hash,name,status,added_at,artist) VALUES(?,?,?,?,?)",
+                        ("abc123", "Kind of Blue", "complete", 100, "Miles Davis"))
+        a1 = cur.lastrowid
+        cur = c.execute("INSERT INTO albums(hash,name,status,added_at,artist) VALUES(?,?,?,?,?)",
+                        ("local:/music/Blue Train", "Blue Train", "complete", 200, "John Coltrane"))
+        a2 = cur.lastrowid
+        c.executemany(
+            "INSERT INTO tracks(album_id,path,name,size,title,duration,format,year,genre)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            [(a1, "01.flac", "01.flac", 1, "So What", 545.0, "FLAC", "1959", "Jazz"),
+             (a1, "02.flac", "02.flac", 1, "Freddie Freeloader", 588.0, "FLAC", "1959", "Jazz"),
+             (a2, "01.mp3", "01.mp3", 1, "Blue Train", 640.0, "MP3", "1957", "Jazz")])
+        c.commit()
+
+        d = client.get("/api/library/tracks").json()
+        assert d["total"] == 3
+        so_what = next(t for t in d["tracks"] if t["title"] == "So What")
+        assert so_what["track_index"] == 0 and so_what["album_id"] == a1
+        freddie = next(t for t in d["tracks"] if t["title"] == "Freddie Freeloader")
+        assert freddie["track_index"] == 1  # ORDER BY path внутри альбома
+        # sort=artist: Coltrane раньше Davis
+        assert d["tracks"][0]["artist"] == "John Coltrane"
+
+        # поиск по исполнителю/названию
+        assert client.get("/api/library/tracks", params={"q": "coltrane"}).json()["total"] == 1
+        assert client.get("/api/library/tracks", params={"q": "so what"}).json()["total"] == 1
+        # формат / год / источник
+        d2 = client.get("/api/library/tracks", params={"format": "MP3"}).json()
+        assert d2["total"] == 1 and d2["tracks"][0]["album"] == "Blue Train"
+        assert client.get("/api/library/tracks", params={"year": "1959"}).json()["total"] == 2
+        assert client.get("/api/library/tracks", params={"source": "folder"}).json()["total"] == 1
+        assert client.get("/api/library/tracks", params={"source": "torrent"}).json()["total"] == 2
+        # избранное
+        c.execute("INSERT INTO favorites(album_id,added_at) VALUES(?,?)", (a2, 1))
+        c.commit()
+        assert client.get("/api/library/tracks", params={"fav": 1}).json()["total"] == 1
+        # пагинация
+        d3 = client.get("/api/library/tracks", params={"limit": 2, "offset": 2}).json()
+        assert d3["total"] == 3 and len(d3["tracks"]) == 1
+        # facets
+        assert any(f["v"] == "Jazz" and f["n"] == 3 for f in d["facets"]["genres"])
+        assert {f["v"] for f in d["facets"]["formats"]} == {"FLAC", "MP3"}
+        assert {f["v"] for f in d["facets"]["years"]} == {"1959", "1957"}

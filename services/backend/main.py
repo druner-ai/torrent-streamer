@@ -600,6 +600,8 @@ def _schema(c):
                      ("idx_cat_lp", "last_post"), ("idx_cat_seed", "seeders"),
                      ("idx_cat_artist", "artist")):
         c.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON catalog({col})")
+    # вкладки «Треки»: join/пагинация по tracks без индекса деградируют на 100k+
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album_id)")
     c.execute("""CREATE TABLE IF NOT EXISTS settings(
         key TEXT PRIMARY KEY, value TEXT)""")
     c.execute("""CREATE TABLE IF NOT EXISTS forums(
@@ -1975,6 +1977,77 @@ def albums():
                     "origin": "folder" if local else "torrent",
                     "source_label": _source_label(r["hash"]) if local else None})
     return out
+
+# ---------- библиотека: все треки (вкладка «Треки») ----------
+@app.get("/api/library/tracks")
+def library_tracks(q: str = "", genre: str = "", year: str = "", format: str = "",
+                   source: str = "", fav: int = 0, sort: str = "artist",
+                   offset: int = 0, limit: int = 100):
+    """Плоский список треков библиотеки: фильтры/пагинация в SQL (100k+ строк).
+
+    track_index считается по ORDER BY path внутри альбома — тот же порядок,
+    что в _current_tracks/album_files, поэтому пригоден для play_track.
+    """
+    c = db()
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    where: list[str] = []
+    args: list = []
+    if q:
+        like = f"%{q}%"
+        where.append("""(COALESCE(NULLIF(t.title,''), t.name) LIKE ? COLLATE NOCASE
+                         OR a.name LIKE ? COLLATE NOCASE OR a.artist LIKE ? COLLATE NOCASE)""")
+        args += [like, like, like]
+    if genre:
+        where.append("t.genre = ?")
+        args.append(genre)
+    if year:
+        where.append("substr(t.year,1,4) = ?")
+        args.append(year[:4])
+    if format:
+        where.append("t.format = ?")
+        args.append(format)
+    if source == "folder":
+        where.append("a.hash LIKE 'local:%'")
+    elif source == "torrent":
+        where.append("a.hash NOT LIKE 'local:%'")
+    join_fav = "JOIN favorites f ON f.album_id = t.album_id" if fav else ""
+    w = ("WHERE " + " AND ".join(where)) if where else ""
+    order = {
+        "artist": "a.artist COLLATE NOCASE, a.name COLLATE NOCASE, t.path",
+        "album": "a.name COLLATE NOCASE, t.path",
+        "title": "title COLLATE NOCASE",
+        "recent": "a.added_at DESC, t.path",
+    }.get(sort, "a.artist COLLATE NOCASE, a.name COLLATE NOCASE, t.path")
+    frm = f"FROM tracks t JOIN albums a ON a.id = t.album_id {join_fav} {w}"
+    total = c.execute(f"SELECT COUNT(*) n {frm}", args).fetchone()["n"]
+    rows = c.execute(
+        f"""SELECT t.album_id, t.duration, t.path,
+                   COALESCE(NULLIF(t.title,''), t.name) AS title,
+                   t.format AS fmt, t.year AS t_year, t.genre AS t_genre,
+                   a.name AS album, a.artist AS artist,
+                   (SELECT COUNT(*) FROM tracks t2
+                    WHERE t2.album_id = t.album_id AND t2.path < t.path) AS idx
+            {frm} ORDER BY {order} LIMIT ? OFFSET ?""",
+        [*args, limit, offset]).fetchall()
+
+    def _facets(col: str, top: int) -> list[dict]:
+        return [{"v": r["v"], "n": r["n"]} for r in c.execute(
+            f"""SELECT {col} v, COUNT(*) n FROM tracks
+                WHERE {col} IS NOT NULL AND {col} != ''
+                GROUP BY {col} ORDER BY n DESC LIMIT ?""", (top,))]
+
+    return {"total": total, "offset": offset, "limit": limit,
+            "tracks": [{"album_id": r["album_id"], "track_index": r["idx"],
+                        "title": r["title"], "album": r["album"], "artist": r["artist"],
+                        "duration": r["duration"], "format": r["fmt"],
+                        "year": r["t_year"], "genre": r["t_genre"]} for r in rows],
+            "facets": {"genres": _facets("genre", 30), "formats": _facets("format", 12),
+                       "years": [{"v": r["v"], "n": r["n"]} for r in c.execute(
+                           """SELECT substr(year,1,4) v, COUNT(*) n FROM tracks
+                              WHERE year IS NOT NULL AND year != ''
+                              GROUP BY v ORDER BY v DESC LIMIT 40""")]}}
+
 
 @app.post("/api/albums/{aid}/favorite")
 def toggle_favorite(aid: int):

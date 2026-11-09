@@ -495,6 +495,7 @@ export default function App() {
                   pushToast(e.message, 'error')
                 }
               }}
+              onPlayTrack={handlePlayTrack}
             />
           )}
           {view === 'artists' && <Artists {...pageProps} />}
