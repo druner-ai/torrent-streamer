@@ -1,5 +1,5 @@
-import { Disc3, ListMusic, Mic2, Music4, Play, Plus, Search, Trash2, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { ChevronDown, Disc3, ListMusic, Mic2, Music4, Play, Plus, Search, Trash2, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import AlbumGrid from '../components/AlbumGrid.jsx'
 import PlaylistModal from '../components/PlaylistModal.jsx'
 import { api } from '../api.js'
@@ -8,6 +8,73 @@ import { formatTime } from '../utils.js'
 function fmtTime(s) {
   s = Math.max(0, Math.floor(s || 0))
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+/* Компактный фильтр-дропдаун (вариант B): одна строка, меню со счётчиками.
+   Определён на уровне модуля, чтобы не ремонтироваться при ререндерах родителя. */
+function FilterDropdown({ label, options, value, onChange, labelFor = (v) => v }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return undefined
+    const onDown = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+  if (!options.length) return null
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={`flex h-9 items-center gap-1.5 rounded-sm border px-3 text-[12.5px] transition-colors ${
+          value
+            ? 'border-primary/50 bg-primary-tint text-primary'
+            : 'border-border-subtle bg-surface-1 text-text-secondary hover:bg-surface-2'
+        }`}
+      >
+        <span className="text-[10.5px] uppercase tracking-wide opacity-60">{label}</span>
+        <span className="max-w-[150px] truncate font-medium">{value ? labelFor(value) : 'Все'}</span>
+        <ChevronDown size={13} className="shrink-0 opacity-70" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-[42px] z-30 max-h-[320px] w-64 overflow-auto rounded-md border border-border-subtle bg-surface-2 py-1 shadow-3">
+          <button
+            type="button"
+            onClick={() => {
+              onChange('')
+              setOpen(false)
+            }}
+            className={`flex w-full items-center justify-between px-3 py-2 text-left text-[12.5px] transition-colors hover:bg-surface-3 ${
+              !value ? 'text-primary' : 'text-text-secondary'
+            }`}
+          >
+            Все
+          </button>
+          {options.map(([v, n]) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => {
+                onChange(value === v ? '' : v)
+                setOpen(false)
+              }}
+              className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-[12.5px] transition-colors hover:bg-surface-3 ${
+                value === v ? 'text-primary' : 'text-text-secondary'
+              }`}
+            >
+              <span className="truncate">{labelFor(v)}</span>
+              {n != null && (
+                <span className="shrink-0 font-mono text-[10.5px] text-text-muted">{n}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function Library({
@@ -185,37 +252,6 @@ export default function Library({
       })
   }
 
-  const chip = (active) =>
-    `flex shrink-0 items-center gap-1.5 rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
-      active ? 'bg-primary-tint text-primary' : 'bg-surface-1 text-text-secondary hover:bg-surface-2'
-    }`
-
-  function chipRow(label, options, value, onChange) {
-    if (!options.length) return null
-    return (
-      <div className="flex items-start gap-2">
-        <span className="w-[72px] shrink-0 pt-1.5 text-right text-[11px] font-medium uppercase tracking-wide text-text-muted">
-          {label}
-        </span>
-        <div className="flex flex-wrap gap-1.5">
-          <button type="button" className={chip(!value)} onClick={() => onChange('')}>
-            Все
-          </button>
-          {options.map(([v, n]) => (
-            <button
-              key={v}
-              type="button"
-              className={chip(value === v)}
-              onClick={() => onChange(value === v ? '' : v)}
-            >
-              {v} <span className="font-mono text-[10.5px] opacity-60">{n}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    )
-  }
-
   const TABS = [
     ['albums', 'Альбомы', Disc3, albums.length],
     ['artists', 'Исполнители', Mic2, facets.artistCount],
@@ -239,82 +275,76 @@ export default function Library({
         </div>
       </div>
 
-      <div className="mb-5 flex flex-wrap items-center gap-2">
+      <div className="mb-4 flex items-center gap-6 overflow-x-auto border-b border-border-subtle">
         {TABS.map(([id, label, Icon, count]) => (
           <button
             key={id}
             type="button"
             onClick={() => setTab(id)}
-            className={`flex items-center gap-2 rounded-sm px-4 py-2 text-[13.5px] font-medium transition-colors ${
+            className={`-mb-px flex shrink-0 items-center gap-2 border-b-2 px-0.5 pb-3 pt-1.5 text-[13.5px] font-medium transition-colors ${
               tab === id
-                ? 'bg-primary-tint text-primary'
-                : 'bg-surface-1 text-text-secondary hover:bg-surface-2'
+                ? 'border-primary text-text-primary'
+                : 'border-transparent text-text-muted hover:text-text-secondary'
             }`}
           >
             <Icon size={15} /> {label}
             {count != null && <span className="font-mono text-[11px] opacity-70">{count}</span>}
           </button>
         ))}
+      </div>
+
+      <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-1">
+        <FilterDropdown label="Жанр" options={facets.genres} value={fGenre} onChange={setFGenre} />
+        <FilterDropdown label="Формат" options={facets.formats} value={fFormat} onChange={setFFormat} />
+        <FilterDropdown label="Год" options={facets.years} value={fYear} onChange={setFYear} />
+        <FilterDropdown
+          label="Источник"
+          options={facets.hasFolders ? [['torrent'], ['folder']] : []}
+          labelFor={(v) => (v === 'torrent' ? 'Торренты' : 'Медиапапки')}
+          value={fSource}
+          onChange={setFSource}
+        />
+        <button
+          type="button"
+          onClick={() => setFFav(!fFav)}
+          aria-label="Избранное"
+          title="Избранное"
+          className={`h-9 shrink-0 rounded-sm border px-3 text-[12.5px] transition-colors ${
+            fFav
+              ? 'border-warning/50 bg-warning/10 text-warning'
+              : 'border-border-subtle bg-surface-1 text-text-secondary hover:bg-surface-2'
+          }`}
+        >
+          ★
+        </button>
+        {filtersActive && (
+          <button
+            type="button"
+            onClick={() => {
+              onQueryChange('')
+              setFGenre('')
+              setFFormat('')
+              setFYear('')
+              setFSource('')
+              setFFav(false)
+            }}
+            className="flex shrink-0 items-center gap-1 px-2 text-[12.5px] text-text-muted transition-colors hover:text-danger"
+          >
+            <X size={13} /> Сбросить
+          </button>
+        )}
         <select
           value={sort}
           onChange={(e) => setSort(e.target.value)}
           disabled={tab === 'tracks'}
           aria-label="Сортировка"
-          className="ml-auto h-9 rounded-sm border border-border-subtle bg-surface-1 px-2 text-[12.5px] text-text-secondary focus:outline-none disabled:opacity-40"
+          className="ml-auto h-9 shrink-0 rounded-sm border border-border-subtle bg-surface-1 px-2 text-[12.5px] text-text-secondary focus:outline-none disabled:opacity-40"
         >
           <option value="added">Сначала новые</option>
           <option value="artist">По исполнителю</option>
           <option value="year">По году</option>
           <option value="name">По названию</option>
         </select>
-      </div>
-
-      <div className="mb-6 space-y-2">
-        {chipRow('Жанр', facets.genres, fGenre, setFGenre)}
-        {chipRow('Формат', facets.formats, fFormat, setFFormat)}
-        {chipRow('Год', facets.years, fYear, setFYear)}
-        <div className="flex items-start gap-2">
-          <span className="w-[72px] shrink-0 pt-1.5 text-right text-[11px] font-medium uppercase tracking-wide text-text-muted">
-            Ещё
-          </span>
-          <div className="flex flex-wrap gap-1.5">
-            <button
-              type="button"
-              className={chip(fSource === 'torrent')}
-              onClick={() => setFSource(fSource === 'torrent' ? '' : 'torrent')}
-            >
-              Торренты
-            </button>
-            {facets.hasFolders && (
-              <button
-                type="button"
-                className={chip(fSource === 'folder')}
-                onClick={() => setFSource(fSource === 'folder' ? '' : 'folder')}
-              >
-                Медиапапки
-              </button>
-            )}
-            <button type="button" className={chip(fFav)} onClick={() => setFFav(!fFav)}>
-              ★ Избранное
-            </button>
-            {filtersActive && (
-              <button
-                type="button"
-                onClick={() => {
-                  onQueryChange('')
-                  setFGenre('')
-                  setFFormat('')
-                  setFYear('')
-                  setFSource('')
-                  setFFav(false)
-                }}
-                className="flex shrink-0 items-center gap-1 rounded-sm px-3 py-1.5 text-[12.5px] text-text-muted hover:text-danger"
-              >
-                <X size={13} /> Сбросить
-              </button>
-            )}
-          </div>
-        </div>
       </div>
 
       {tab === 'albums' && (
