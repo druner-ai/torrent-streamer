@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Теги: vX.Y.Z → «X.Y.Z» + «X.Y»; стабильный тег обновляет «latest»,
+      # пререлиз (vX.Y.Z-beta.N) — «beta».
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/druner-ai/soundvault
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=beta,enable=${{ contains(github.ref_name, '-') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/backend/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ## Установка
+
+            ```bash
+            docker run -d --name soundvault --network host \
+              -v soundvault-data:/data \
+              -v /путь/к/музыке:/music:ro \
+              -e MEDIA_DIR1=/music \
+              ghcr.io/druner-ai/soundvault:${{ contains(github.ref_name, '-') && 'beta' || 'latest' }}
+            ```
+
+            Веб-интерфейс: http://<адрес сервера>:8000 (мастер первого запуска проведёт по настройке).

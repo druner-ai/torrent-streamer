@@ -23,6 +23,38 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build -t torrent-streamer-backend -f services/backend/Dockerfile .
 
+  smoke:
+    # «Свежий пользователь»: контейнер с пустым окружением (без qbt/MPD/эндпоинтов)
+    # обязан подняться и отвечать вменяемо на все базовые API.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t soundvault-smoke -f services/backend/Dockerfile .
+      - name: Fresh-user API smoke
+        run: |
+          docker volume create sv-smoke-data
+          docker run -d --name sv-smoke -p 8000:8000 \
+            -e MDNS_REGISTER=0 -v sv-smoke-data:/data soundvault-smoke
+          code=000
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/health || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          if [ "$code" != "200" ]; then
+            echo "health не поднялся (последний код: $code)"; docker logs sv-smoke; exit 1
+          fi
+          fail=0
+          for ep in /api/health /api/albums /api/settings /api/endpoints /api/player \
+                    /api/queue /api/sources /api/catalog/groups /api/setup/status /; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000$ep")
+            echo "$ep -> $code"
+            case "$code" in 200) ;; *) fail=1 ;; esac
+          done
+          docker logs --tail 30 sv-smoke
+          docker rm -f sv-smoke; docker volume rm sv-smoke-data
+          exit $fail
+
   test:
     runs-on: ubuntu-latest
     steps:

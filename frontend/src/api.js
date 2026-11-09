@@ -94,6 +94,7 @@ export const api = {
   setupStatus: () => request('/api/setup/status'),
 
   queue: () => request('/api/queue'),
+  health: () => request('/api/health'),
   sources: () => request('/api/sources'),
   addSource: (path) => post('/api/sources', { path }),
   removeSource: (path, deleteAlbums = true) =>

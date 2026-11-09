@@ -31,7 +31,7 @@ from mpd import MPDClient
 from mutagen import File as MutagenFile
 from pydantic import BaseModel
 
-VERSION = "0.1.0"
+VERSION = "0.9.0"
 
 # --- конфиг (env с дефолтами) ---
 QBT_URL = os.getenv("QBT_URL", "http://127.0.0.1:8080")

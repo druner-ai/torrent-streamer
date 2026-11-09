@@ -29,6 +29,12 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [epName, setEpName] = useState('')
   const [epAddr, setEpAddr] = useState('')
   const [epBusy, setEpBusy] = useState(null)
+  const [srvVersion, setSrvVersion] = useState(null)
+
+  useEffect(() => {
+    if (!open) return
+    api.health().then((d) => setSrvVersion(d.version)).catch(() => {})
+  }, [open])
 
   const addManualEp = async () => {
     const name = epName.trim()
@@ -250,7 +256,14 @@ export default function SettingsModal({ open, onClose, notify }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center gap-3">
-          <h2 className="text-[18px] font-semibold text-text-primary">Настройки</h2>
+          <h2 className="text-[18px] font-semibold text-text-primary">
+            Настройки
+            {srvVersion && (
+              <span className="ml-2 font-mono text-[11px] font-normal text-text-muted">
+                v{srvVersion}
+              </span>
+            )}
+          </h2>
           <button
             type="button"
             onClick={onClose}
