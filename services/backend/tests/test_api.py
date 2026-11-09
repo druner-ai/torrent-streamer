@@ -215,7 +215,7 @@ def test_add_does_not_crash_when_enrich_fails(tmp_path):
 def test_delete_album_removes_album(tmp_path):
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(main, "QB") as QB:
         qb = QB.return_value
-        qb.info.side_effect = [[], [{"name": "Great Album", "hash": "abc123"}]]
+        qb.info.side_effect = [[], [{"name": "Great Album", "hash": "abc123"}], []]
         qb.files.return_value = [
             {"name": "01.flac", "index": 0, "size": 100},
             {"name": "02.flac", "index": 1, "size": 200},

@@ -1933,9 +1933,19 @@ def albums():
     out = []
     try:
         qb = QB()
-    except HTTPException:
-        qb = None  # qbt недоступен — библиотека отдаётся без live-прогресса
+        # ОДИН запрос всего списка торрентов вместо find_by_hash на каждый альбом
+        by_hash = {t["hash"]: t for t in qb.info()}
+    except (HTTPException, requests.RequestException):
+        by_hash = None  # qbt недоступен — библиотека отдаётся без live-прогресса
     favs = {row["album_id"] for row in c.execute("SELECT album_id FROM favorites")}
+    # год/жанр/формат первого размеченного трека — одним проходом вместо N запросов
+    meta: dict = {}
+    for m in c.execute("""SELECT album_id, year, genre, format FROM tracks
+                          WHERE year IS NOT NULL OR genre IS NOT NULL
+                             OR format IS NOT NULL
+                          ORDER BY album_id, id"""):
+        if m["album_id"] not in meta:
+            meta[m["album_id"]] = (m["year"], m["genre"], m["format"])
     root_ok: dict = {}
 
     def _dir_available(d: str) -> bool:
@@ -1951,12 +1961,7 @@ def albums():
 
     for r in rows:
         local = _is_local(r["hash"])
-        info = None
-        if qb is not None and not local:
-            try:
-                info = qb.find_by_hash(r["hash"])
-            except requests.RequestException:
-                qb = None  # qbt отвалился посреди цикла — не роняем выдачу
+        info = None if local or by_hash is None else by_hash.get(r["hash"])
         if local:
             available = _dir_available(_local_dir(r["hash"]))
             status = "complete" if available else "missing"
@@ -1964,12 +1969,7 @@ def albums():
         else:
             status = _torrent_state(info["state"]) if info else (r["status"] or "downloading")
             progress = round((info["progress"] if info else 0) * 100, 1)
-        year = genre = fmt = None
-        for t in c.execute("""SELECT year, genre, format FROM tracks
-                              WHERE album_id=? AND (year IS NOT NULL OR genre IS NOT NULL
-                                                    OR format IS NOT NULL)
-                              LIMIT 1""", (r["id"],)):
-            year, genre, fmt = t["year"], t["genre"], t["format"]
+        year, genre, fmt = meta.get(r["id"], (None, None, None))
         release_key = r["release_key"] or _release_key(r["artist"], r["name"])
         out.append({"id": r["id"], "hash": r["hash"], "name": r["name"],
                     "status": status, "progress": progress,
