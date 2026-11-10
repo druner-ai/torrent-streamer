@@ -2519,8 +2519,11 @@ def _scan_cloud_source(src: dict) -> None:
             print(f"[cloud-scan] {key}:{path or '/'}: {e}", flush=True)
             continue
         time.sleep(0.2)  # вежливость к Яндексу (листинг)
-        audio = [{"path": (path + "/" + it["name"]) if path else it["name"],
-                  "name": it["name"], "size": it.get("size", 0)}
+        # path внутри облака хранится С leading slash ('/Artist/Album'); корень — ''.
+        def _child(name: str) -> str:
+            return (path.rstrip("/") + "/" + name) if path else "/" + name
+
+        audio = [{"path": _child(it["name"]), "name": it["name"], "size": it.get("size", 0)}
                  for it in items if it.get("type") == "file"
                  and os.path.splitext(it["name"])[1].lower() in AUDIO_EXTS]
         if audio:
@@ -2534,7 +2537,7 @@ def _scan_cloud_source(src: dict) -> None:
                 _SCAN_STATE["errors"] += 1
         for it in items:
             if it.get("type") == "dir":
-                stack.append((path + "/" + it["name"]) if path else it["name"])
+                stack.append(_child(it["name"]))
         scanned += 1
         if scanned % 25 == 0:
             _SCAN_STATE["scanned"] = scanned
