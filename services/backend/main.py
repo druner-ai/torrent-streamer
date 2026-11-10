@@ -2456,7 +2456,12 @@ def _scan_worker(targets: list) -> None:
     finally:
         with _SCAN_LOCK:
             _SCAN_STATE.update(running=False, path=None)
-        _backfill_kick()  # после скана — автозаполнение тегов новых треков (фон)
+        # Бэкфилл тегов НЕ автозапускаем (BACKFILL_AUTO=1 — включить явно):
+        # он читает mutagen'ом теги всех треков (вкл. DSF/DFF с гигантскими
+        # embedded-обложками в ID3) и при большой библиотеке раздувает память
+        # до OOM. Запуск — вручную: POST /api/library/backfill.
+        if os.getenv("BACKFILL_AUTO", "0") == "1":
+            _backfill_kick()
 
 
 # ---------- облачные источники: Яндекс.Диск по публичной ссылке ----------
