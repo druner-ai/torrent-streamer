@@ -26,6 +26,7 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [scanState, setScanState] = useState(null)
   const [backfill, setBackfill] = useState(null)
   const [newDir, setNewDir] = useState('')
+  const [newCloudUrl, setNewCloudUrl] = useState('')
   const [srcBusy, setSrcBusy] = useState(false)
   const [epName, setEpName] = useState('')
   const [epAddr, setEpAddr] = useState('')
@@ -118,6 +119,42 @@ export default function SettingsModal({ open, onClose, notify }) {
     try {
       const r = await api.removeSource(path, true)
       notify?.(`Медиапапка убрана, альбомов удалено: ${r.albums_removed}`, 'success')
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+    setSrcBusy(false)
+    refreshSources()
+  }
+
+  const addCloudSrc = async () => {
+    const u = newCloudUrl.trim()
+    if (!u) return
+    setSrcBusy(true)
+    try {
+      await api.addCloudSource(u)
+      setNewCloudUrl('')
+      notify?.('Облачный источник добавлен', 'success')
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+    setSrcBusy(false)
+    refreshSources()
+  }
+
+  const scanCloud = async (key) => {
+    try {
+      await api.scanCloudSource(key)
+    } catch (e) {
+      notify?.(e.message, 'error')
+    }
+    refreshSources()
+  }
+
+  const delCloud = async (key) => {
+    setSrcBusy(true)
+    try {
+      const r = await api.removeCloudSource(key)
+      notify?.(`Облачный источник убран, альбомов удалено: ${r.albums_removed}`, 'success')
     } catch (e) {
       notify?.(e.message, 'error')
     }
@@ -402,9 +439,76 @@ export default function SettingsModal({ open, onClose, notify }) {
 
             <div>
               <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-text-muted">
+                Облако (Яндекс.Диск)
+              </h3>
+              {sources.filter((s) => s.kind === 'cloud').map((s) => (
+                <div
+                  key={s.key}
+                  className="mb-2 flex items-center gap-2 rounded-sm bg-surface-inset px-3 py-2"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono text-[12px] text-text-primary">
+                      {s.label || s.key}
+                    </span>
+                    <span className="block text-[11px] text-text-muted">
+                      {s.albums} альбомов
+                      {scanState?.running && scanState.path === `cloud:${s.label || s.key}`
+                        ? ` · сканирование: ${scanState.scanned} папок, +${scanState.added}`
+                        : ''}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => scanCloud(s.key)}
+                    disabled={scanState?.running || srcBusy}
+                    className="rounded-sm p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-primary disabled:opacity-40"
+                    aria-label="Сканировать"
+                    title="Сканировать"
+                  >
+                    <RefreshCw
+                      size={14}
+                      className={
+                        scanState?.running && scanState.path === `cloud:${s.label || s.key}`
+                          ? 'animate-spin' : ''
+                      }
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => delCloud(s.key)}
+                    disabled={srcBusy}
+                    className="rounded-sm p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-red-400"
+                    aria-label="Удалить облачный источник"
+                    title="Убрать источник (его альбомы удалятся из библиотеки)"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+              <div className="mb-4 flex gap-2">
+                <input
+                  value={newCloudUrl}
+                  onChange={(e) => setNewCloudUrl(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addCloudSrc()}
+                  placeholder="https://disk.yandex.ru/d/… — публичная ссылка"
+                  className="h-9 min-w-0 flex-1 rounded-sm border border-transparent bg-surface-inset px-3 text-[13px] text-text-primary placeholder:text-text-muted focus:border-strong focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={addCloudSrc}
+                  disabled={srcBusy || !newCloudUrl.trim()}
+                  className="h-9 shrink-0 rounded-sm bg-surface-2 px-3 text-[13px] text-text-primary transition-colors hover:bg-surface-3 disabled:opacity-40"
+                >
+                  Добавить
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-text-muted">
                 Медиапапки (USB / сетевые)
               </h3>
-              {sources.map((s) => (
+              {sources.filter((s) => s.kind !== 'cloud').map((s) => (
                 <div
                   key={s.path}
                   className="mb-2 flex items-center gap-2 rounded-sm bg-surface-inset px-3 py-2"
