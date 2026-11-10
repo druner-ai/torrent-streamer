@@ -2193,6 +2193,7 @@ def album_cover(aid: int):
         pass
     if not data:
         raise HTTPException(404, "обложка не найдена")
+    data, mime = _shrink_cover(data, mime)
     cache_file.write_bytes(data)
     return Response(content=data, media_type=mime or "image/jpeg")
 
@@ -2713,6 +2714,31 @@ def _read_cover(path):
     except Exception:  # noqa: BLE001 — обложка не критична
         return None
     return None
+
+
+_COVER_MAX = 512  # макс. сторона превью: сетка ~180px, ретина ×2 → 360px; 512 с запасом
+
+
+def _shrink_cover(data, mime):
+    """Сжать обложку до ~512px (JPEG, качество 85), чтобы не грузить iOS полным артом.
+
+    Embedded-арт из FLAC бывает 3000×3000 / 500КБ+; сотни таких в сетке вешают Safari.
+    Возвращает (bytes, mime); при сжатии mime всегда image/jpeg. Если Pillow недоступен
+    или сжатие не вышло — отдаёт исходные (data, mime).
+    """
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.open(BytesIO(data))
+        img = img.convert("RGB")  # JPEG не хранит альфу; P-режим/CMYK тоже не нужны
+        img.thumbnail((_COVER_MAX, _COVER_MAX))
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=85, optimize=True)
+        return out.getvalue(), "image/jpeg"
+    except Exception:  # noqa: BLE001 — обложка не критична, отдаём как есть
+        return data, mime
 
 
 def _ts_cmd(payload: dict) -> dict:

@@ -4,3 +4,4 @@ requests
 python-mpd2
 mutagen
 zeroconf
+Pillow

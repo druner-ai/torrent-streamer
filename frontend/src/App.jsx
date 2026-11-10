@@ -48,9 +48,11 @@ const SILENT_WAV = makeSilentWav()
 export default function App() {
   const [view, setView] = useState('library')
   const [albums, setAlbums] = useState([])
+  const albumsSig = useRef('') // подпись последнего ответа /api/albums — стоп-кран для ререндера
   const [albumsLoading, setAlbumsLoading] = useState(true)
   const [history, setHistory] = useState([])
   const [player, setPlayer] = useState({ state: 'stop', volume: 100, album_id: null })
+  const playerSig = useRef('') // стоп-кран: не дёргать ре-рендер, когда плеер не менялся
   const [queue, setQueue] = useState({ queue: [], pos: -1 })
   const [queueLoading, setQueueLoading] = useState(true)
   const [sleepMinutes, setSleepMinutes] = useState(null)
@@ -88,7 +90,11 @@ export default function App() {
   const loadAlbums = useCallback(async () => {
     try {
       const data = await api.albums()
-      setAlbums(data || [])
+      const sig = JSON.stringify(data || [])
+      if (sig !== albumsSig.current) {
+        albumsSig.current = sig
+        setAlbums(data || [])
+      }
     } catch {
       // background poll — surfaced elsewhere
     } finally {
@@ -99,8 +105,12 @@ export default function App() {
   const loadPlayer = useCallback(async () => {
     try {
       const p = await api.player()
-      setPlayer(p)
-      setSleepMinutes(p.sleep_minutes ?? null) // сервер — источник правды о таймере
+      const sig = JSON.stringify(p)
+      if (sig !== playerSig.current) {
+        playerSig.current = sig
+        setPlayer(p)
+        setSleepMinutes(p.sleep_minutes ?? null) // сервер — источник правды о таймере
+      }
     } catch {
       // background poll
     }
@@ -144,7 +154,7 @@ export default function App() {
         pushToast(e.message, 'error')
       }
     },
-    [player, loadPlayer, loadQueue, pushToast],
+    [player.album_id, player.state, loadPlayer, loadQueue, pushToast],
   )
 
   const handlePlayTrack = useCallback(
@@ -422,19 +432,28 @@ export default function App() {
 
   const isPlayingAlbum = useCallback(
     (album) => player.state === 'playing' && player.album_id === album.id,
-    [player],
+    [player.state, player.album_id],
   )
 
   const openAlbum = albums.find((a) => a.id === openAlbumId) || null
   const hasTrack = player.state !== 'stop' && player.album_id != null
+
+  const onQueueAlbum = useCallback(
+    (album) => handleAddToQueue(album.id, 0, 'end'),
+    [handleAddToQueue],
+  )
+  const onToggleFavoriteAlbum = useCallback(
+    (album) => handleToggleFavorite(album.id),
+    [handleToggleFavorite],
+  )
 
   const pageProps = {
     albums,
     loading: albumsLoading,
     onOpen: setOpenAlbumId,
     onPlay: handlePlayAlbum,
-    onQueue: (album) => handleAddToQueue(album.id, 0, 'end'),
-    onToggleFavorite: (album) => handleToggleFavorite(album.id),
+    onQueue: onQueueAlbum,
+    onToggleFavorite: onToggleFavoriteAlbum,
     isPlayingAlbum,
   }
 

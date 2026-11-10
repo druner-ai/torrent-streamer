@@ -1,5 +1,5 @@
 import { Disc3, Heart, ListPlus, Pause, Play } from 'lucide-react'
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { api } from '../api.js'
 import { formatBadge, isHiRes, statusLabel, statusTone } from '../utils.js'
 
@@ -19,7 +19,7 @@ const toneBar = {
   muted: 'bg-text-muted',
 }
 
-export default function AlbumCard({ album, onOpen, onPlay, onQueue, onToggleFavorite, isPlaying }) {
+export default memo(function AlbumCard({ album, onOpen, onPlay, onQueue, onToggleFavorite, isPlaying }) {
   const [coverFailed, setCoverFailed] = useState(false)
   const badge = formatBadge(album.format)
   const showProgress = album.status !== 'complete'
@@ -58,7 +58,7 @@ export default function AlbumCard({ album, onOpen, onPlay, onQueue, onToggleFavo
         )}
 
         {album.origin === 'folder' && (
-          <span className="absolute bottom-2 left-2 rounded-xs bg-black/55 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-text-primary backdrop-blur-sm">
+          <span className="absolute bottom-2 left-2 rounded-xs bg-black/70 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-text-primary">
             {album.source_label || 'папка'}
           </span>
         )}
@@ -70,7 +70,7 @@ export default function AlbumCard({ album, onOpen, onPlay, onQueue, onToggleFavo
             onToggleFavorite(album)
           }}
           aria-label={album.favorite ? 'Убрать из избранного' : 'В избранное'}
-          className="absolute right-2 top-2 rounded-full bg-black/45 p-1.5 text-text-primary opacity-90 backdrop-blur-sm transition-opacity hover:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+          className="absolute right-2 top-2 rounded-full bg-black/60 p-1.5 text-text-primary opacity-90 transition-opacity hover:opacity-100 md:opacity-0 md:group-hover:opacity-100"
         >
           <Heart size={14} className={album.favorite ? 'fill-primary text-primary' : ''} />
         </button>
@@ -84,7 +84,7 @@ export default function AlbumCard({ album, onOpen, onPlay, onQueue, onToggleFavo
             }}
             aria-label="Добавить в очередь"
             title="В очередь"
-            className="absolute bottom-2 right-14 flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-text-primary opacity-90 shadow-2 backdrop-blur-sm transition-all duration-200 hover:bg-black/60 hover:opacity-100 md:translate-y-1 md:opacity-0 md:group-hover:translate-y-0 md:group-hover:opacity-100"
+            className="absolute bottom-2 right-14 flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-text-primary opacity-90 shadow-2 transition-all duration-200 hover:bg-black/75 hover:opacity-100 md:translate-y-1 md:opacity-0 md:group-hover:translate-y-0 md:group-hover:opacity-100"
           >
             <ListPlus size={18} />
           </button>
@@ -128,4 +128,4 @@ export default function AlbumCard({ album, onOpen, onPlay, onQueue, onToggleFavo
       )}
     </div>
   )
-}
+})
