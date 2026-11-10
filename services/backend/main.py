@@ -1616,7 +1616,7 @@ class QB:
     def add(self, link: str):
         r = self.s.post(f"{_qbt_url()}/api/v2/torrents/add",
                         data={"urls": link, "sequentialDownload": "true",
-                              "firstLastPiecePrio": "true"})
+                              "firstLastPiecePrio": "true"}, timeout=15)
         r.raise_for_status()
 
     def add_file(self, path: str):
@@ -1625,21 +1625,22 @@ class QB:
                             data={"sequentialDownload": "true",
                                   "firstLastPiecePrio": "true"},
                             files={"torrents": (os.path.basename(path), f,
-                                                "application/x-bittorrent")})
+                                                "application/x-bittorrent")}, timeout=15)
         r.raise_for_status()
 
     def delete(self, hash: str):
         r = self.s.post(f"{_qbt_url()}/api/v2/torrents/delete",
-                        data={"hashes": hash, "deleteFiles": "false"})
+                        data={"hashes": hash, "deleteFiles": "false"}, timeout=15)
         r.raise_for_status()
 
     def info(self):
-        r = self.s.get(f"{_qbt_url()}/api/v2/torrents/info")
+        r = self.s.get(f"{_qbt_url()}/api/v2/torrents/info", timeout=5)
         r.raise_for_status()
         return r.json()
 
     def files(self, hash_: str):
-        r = self.s.get(f"{_qbt_url()}/api/v2/torrents/files", params={"hash": hash_})
+        r = self.s.get(f"{_qbt_url()}/api/v2/torrents/files", params={"hash": hash_},
+                       timeout=5)
         r.raise_for_status()
         return r.json()
 
@@ -1659,7 +1660,7 @@ class QB:
             else:
                 prios[f["index"]] = 0  # don't download non-audio
         self.s.post(f"{_qbt_url()}/api/v2/torrents/filePrio",
-                    data={"hash": hash_, "priority": "|".join(str(prios.get(f["index"], 0)) for f in files)})
+                    data={"hash": hash_, "priority": "|".join(str(prios.get(f["index"], 0)) for f in files)}, timeout=15)
 
     def prioritize_window(self, hash_: str, window: set, audio_names: set):
         # окно (текущий+следующий трек) — 6, остальные аудио — 1 (докачаются позже),
@@ -1674,7 +1675,7 @@ class QB:
             else:
                 prios[f["index"]] = 0
         self.s.post(f"{_qbt_url()}/api/v2/torrents/filePrio",
-                    data={"hash": hash_, "priority": "|".join(str(prios.get(f["index"], 0)) for f in files)})
+                    data={"hash": hash_, "priority": "|".join(str(prios.get(f["index"], 0)) for f in files)}, timeout=15)
 
 # ---------- MPD ----------
 def mpd_cmd(fn):
