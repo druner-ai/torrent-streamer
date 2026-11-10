@@ -105,7 +105,7 @@ services:
   # старта — в `docker compose logs qbittorrent` (его же можно ввести в мастере
   # настройки SoundVault; смену пароля qbt поддерживает только через свой WebUI/API).
   qbittorrent:
-    image: linuxserver/qbittorrent:latest
+    image: linuxserver/qbittorrent:5.3.0
     profiles: ["full"]
     container_name: torrent-streamer-qbittorrent
     environment:
@@ -113,11 +113,16 @@ services:
       - PGID=1000
       - TZ=UTC
       - WEBUI_PORT=8080
+      # Пароль WebUI из .env: init-скрипт (custom-cont-init.d) выставляет его при
+      # ПЕРВОМ старте вместо случайного временного. Не задан — дефолт linuxserver.
+      - QBT_PASS=${QBT_PASS:-}
     volumes:
       - qbt-config:/config
       # Каталог загрузок монтируется в /downloads (дефолт qbt) — save_path из
       # qbt API (/downloads/...) совпадает с тем же томом в backend.
       - ${DOWNLOADS_DIR:-/srv/torrents/downloads}:/downloads
+      # init-хук: ставит WebUI-пароль из QBT_PASS при первом старте (идемпотентно).
+      - ./services/qbittorrent:/custom-cont-init.d:ro
     # Только loopback: WebUI qbt не торчит в LAN/интернет. Backend работает в
     # host-сети и достучится по 127.0.0.1:8080. Пир-порт торрентов наружу НЕ
     # публикуется — входящие соединения пиров и так работают через CGNAT/NAT

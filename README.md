@@ -59,13 +59,14 @@ docker compose --profile full up -d --build
 ```
 
 - **qBittorrent**: WebUI на `127.0.0.1:8080` (loopback — наружу не торчит),
-  логин `admin`. При первом старте qbt печатает временный пароль:
-  `docker compose logs qbittorrent | grep -i password`. Введите его в мастере
-  настройки SoundVault (или смените на свой в WebUI qbt → Настройки → Web UI —
-  и тогда в мастере/`.env` (`QBT_PASS`) укажите уже свой). Каталог загрузок —
-  `DOWNLOADS_DIR` из `.env`: монтируется в qbt как `/downloads` (его дефолтный
-  путь сохранения), а в backend — тем же хост-путём и как `/downloads`, поэтому
-  пути из qbt API резолвятся корректно.
+  логин `admin`. Пароль задаётся в `.env` (`QBT_PASS`) и при ПЕРВОМ старте
+  выставляется автоматически (init-хук `services/qbittorrent/set-webui-password.sh`
+  генерирует PBKDF2-хеш и кладёт в `qBittorrent.conf`) — доставать временный
+  пароль из логов не нужно. Позже сменить пароль можно в WebUI qbt → Настройки →
+  Web UI (и обновить `QBT_PASS` в `.env`, чтобы backend логинился с ним же).
+  Каталог загрузок — `DOWNLOADS_DIR` из `.env`: монтируется в qbt как `/downloads`
+  (его дефолтный путь сохранения), а в backend — тем же хост-путём и как `/downloads`,
+  поэтому пути из qbt API резолвятся корректно.
 - **FlareSolverr** (обход Cloudflare для RuTracker — витрина трекера и скачивание):
   поднимется на `127.0.0.1:8191` (только loopback), с лимитами 1 CPU / 1 ГБ RAM,
   чтобы решение CF-challenge не мешало звуку. Backend уже настроен на него через
