@@ -1924,7 +1924,11 @@ def _file_state(progress: float, torrent_state: str) -> str:
 
 
 def _source_label(hash_) -> str | None:
-    """Метка источника локального альбома: basename медиапапки, в которой он лежит."""
+    """Метка источника альбома: имя облачного источника или basename медиапапки."""
+    if _is_cloud(hash_):
+        key, _ = _cloud_parts(hash_)
+        src = next((s for s in _cloud_sources() if s["key"] == key), None)
+        return src.get("label") if src else key
     d = _local_dir(hash_)
     best = None
     for root in _media_dirs():
@@ -1958,14 +1962,18 @@ def albums():
 
     for r in rows:
         local = _is_local(r["hash"])
-        info = None if local or by_hash is None else by_hash.get(r["hash"])
-        if local:
-            available = _dir_available(_local_dir(r["hash"]))
-            status = "complete" if available else "missing"
-            progress = 100.0 if available else 0.0
+        cloud = _is_cloud(r["hash"])
+        if cloud:
+            status, progress, info = "complete", 100.0, None
         else:
-            status = _torrent_state(info["state"]) if info else (r["status"] or "downloading")
-            progress = round((info["progress"] if info else 0) * 100, 1)
+            info = None if local or by_hash is None else by_hash.get(r["hash"])
+            if local:
+                available = _dir_available(_local_dir(r["hash"]))
+                status = "complete" if available else "missing"
+                progress = 100.0 if available else 0.0
+            else:
+                status = _torrent_state(info["state"]) if info else (r["status"] or "downloading")
+                progress = round((info["progress"] if info else 0) * 100, 1)
         year, genre, fmt = meta.get(r["id"], (None, None, None))
         release_key = r["release_key"] or _release_key(r["artist"], r["name"])
         out.append({"id": r["id"], "hash": r["hash"], "name": r["name"],
@@ -1973,8 +1981,8 @@ def albums():
                     "tracks": r["n"], "artist": r["artist"], "cover_url": r["cover_url"],
                     "year": year, "genre": genre, "format": fmt,
                     "release_key": release_key, "favorite": r["id"] in favs,
-                    "origin": "folder" if local else "torrent",
-                    "source_label": _source_label(r["hash"]) if local else None})
+                    "origin": "cloud" if cloud else ("folder" if local else "torrent"),
+                    "source_label": _source_label(r["hash"]) if (local or cloud) else None})
     return out
 
 # ---------- библиотека: все треки (вкладка «Треки») ----------
@@ -2233,6 +2241,33 @@ def _local_dir(hash_) -> str:
     return str(hash_)[len(_LOCAL_PREFIX):]
 
 
+_CLOUD_PREFIX = "cloud:"
+
+
+def _is_cloud(hash_) -> bool:
+    """Облачный альбом (Яндекс.Диск) хранится с hash='cloud:<key>:<путь>'."""
+    return str(hash_).startswith(_CLOUD_PREFIX)
+
+
+def _cloud_parts(hash_) -> tuple[str, str]:
+    """'cloud:<key>:<path>' → (key, path). key — публичный ключ папки, path — путь внутри."""
+    rest = str(hash_)[len(_CLOUD_PREFIX):]
+    key, _, path = rest.partition(":")
+    return key, path
+
+
+def _cloud_sources() -> list[dict]:
+    """Облачные источники из settings: [{"key","label","url"}, ...]."""
+    raw = _get_setting("cloud_sources")
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw)
+        return v if isinstance(v, list) else []
+    except ValueError:
+        return []
+
+
 # ---------- медиапапки (USB / сетевые источники) ----------
 AUDIO_EXTS = {".flac", ".dsf", ".dff", ".wav", ".mp3", ".m4a", ".aac", ".ogg",
               ".opus", ".ape", ".wv", ".aiff", ".aif", ".mp4", ".m4b"}
@@ -2394,6 +2429,127 @@ def _scan_worker(targets: list) -> None:
         with _SCAN_LOCK:
             _SCAN_STATE.update(running=False, path=None)
         _backfill_kick()  # после скана — автозаполнение тегов новых треков (фон)
+
+
+# ---------- облачные источники: Яндекс.Диск по публичной ссылке ----------
+YANDEX_PUBLIC_API = "https://cloud-api.yandex.net/v1/disk/public/resources"
+_YD_HEADERS = {"User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")}
+
+
+def _yd_get(url: str, params: dict) -> dict:
+    """GET к публичному API Яндекс.Диска с вежливым retry (429/5xx, backoff)."""
+    last = "нет ответа"
+    for attempt in range(6):
+        try:
+            r = requests.get(url, params=params, headers=_YD_HEADERS, timeout=30)
+            if r.status_code == 200:
+                return r.json()
+            last = f"HTTP {r.status_code}"
+            if r.status_code not in (429, 408) and r.status_code < 500:
+                raise RuntimeError(f"Яндекс.Диск: {last}: {r.text[:160]}")
+        except requests.RequestException as e:
+            last = str(e)
+        time.sleep(2 ** attempt)
+    raise RuntimeError(f"Яндекс.Диск: {last}")
+
+
+def _yd_list_items(url: str, path: str) -> list[dict]:
+    data = _yd_get(YANDEX_PUBLIC_API, {"public_key": url, "path": path, "limit": 10000})
+    return data.get("_embedded", {}).get("items", []) if isinstance(data, dict) else []
+
+
+def _yd_key_from_url(url: str) -> str:
+    """Из 'https://disk.yandex.ru/d/<key>' → '<key>'."""
+    m = re.search(r"disk\.yandex\.(?:ru|com)/(?:d|i)/([A-Za-z0-9_-]+)", url.strip())
+    if not m:
+        raise HTTPException(400, "не похоже на публичную ссылку Яндекс.Диска (…/d/<ключ>)")
+    return m.group(1)
+
+
+def _upsert_cloud_album(c, key: str, cloud_dir: str, files: list) -> bool:
+    """Создать/обновить облачный альбом. files — [{path,name,size}, ...]. True = новый."""
+    h = f"{_CLOUD_PREFIX}{key}:{cloud_dir}"
+    dirname = cloud_dir.rstrip("/").rsplit("/", 1)[-1]
+    artist, name = _parse_folder_album(dirname)
+    files.sort(key=lambda f: f["name"].lower())
+    row = c.execute("SELECT id, artist FROM albums WHERE hash=?", (h,)).fetchone()
+    created = row is None
+    if created:
+        aid = c.execute(
+            "INSERT INTO albums(hash,name,artist,status,added_at) VALUES(?,?,?,?,?)",
+            (h, name, artist, "complete", int(time.time()))).lastrowid
+    else:
+        aid = row["id"]
+        if artist and not row["artist"]:
+            c.execute("UPDATE albums SET artist=? WHERE id=?", (artist, aid))
+    existing = {t["path"]: t["size"] for t in
+                c.execute("SELECT path,size FROM tracks WHERE album_id=?", (aid,))}
+    seen = set()
+    for f in files:
+        seen.add(f["path"])
+        if f["path"] in existing and existing[f["path"]] == f["size"]:
+            continue
+        if f["path"] in existing:
+            c.execute("UPDATE tracks SET size=? WHERE album_id=? AND path=?",
+                      (f["size"], aid, f["path"]))
+        else:
+            c.execute("INSERT INTO tracks(album_id,path,name,size) VALUES(?,?,?,?)",
+                      (aid, f["path"], f["name"], f["size"]))
+    for gone in set(existing) - seen:
+        c.execute("DELETE FROM tracks WHERE album_id=? AND path=?", (aid, gone))
+    c.commit()
+    return created
+
+
+def _scan_cloud_source(src: dict) -> None:
+    """Рекурсивный обход публичной папки: альбом = подпапка с аудиофайлами."""
+    url, key = src["url"], src["key"]
+    c = db()
+    stack: list[str] = [""]
+    scanned = 0
+    while stack:
+        if not _SCAN_STATE["running"]:
+            return
+        path = stack.pop()
+        try:
+            items = _yd_list_items(url, path)
+        except RuntimeError as e:
+            _SCAN_STATE["errors"] += 1
+            print(f"[cloud-scan] {key}:{path or '/'}: {e}", flush=True)
+            continue
+        time.sleep(0.2)  # вежливость к Яндексу (листинг)
+        audio = [{"path": (path + "/" + it["name"]) if path else it["name"],
+                  "name": it["name"], "size": it.get("size", 0)}
+                 for it in items if it.get("type") == "file"
+                 and os.path.splitext(it["name"])[1].lower() in AUDIO_EXTS]
+        if audio:
+            try:
+                if _upsert_cloud_album(c, key, path, audio):
+                    _SCAN_STATE["added"] += 1
+                else:
+                    _SCAN_STATE["updated"] += 1
+            except Exception as e:  # noqa: BLE001 — битая папка не роняет скан
+                print(f"[cloud-scan] {key}:{path or '/'}: {e}", flush=True)
+                _SCAN_STATE["errors"] += 1
+        for it in items:
+            if it.get("type") == "dir":
+                stack.append((path + "/" + it["name"]) if path else it["name"])
+        scanned += 1
+        if scanned % 25 == 0:
+            _SCAN_STATE["scanned"] = scanned
+
+
+def _scan_cloud_worker(sources: list) -> None:
+    try:
+        for src in sources:
+            if not _SCAN_STATE["running"]:
+                break
+            _SCAN_STATE["path"] = f"cloud:{src.get('label', src['key'])}"
+            _scan_cloud_source(src)
+    finally:
+        with _SCAN_LOCK:
+            _SCAN_STATE.update(running=False, path=None)
 
 
 # ---------- бэкфилл тегов треков (названия/длительности/жанры по всей библиотеке) ----------
@@ -2562,6 +2718,8 @@ def backfill_stop():
 
 class SourceReq(BaseModel):
     path: str = ""
+    url: str = ""
+    cloud_key: str = ""
 
 
 @app.get("/api/sources")
@@ -2571,12 +2729,27 @@ def sources_get():
     for d in _media_dirs():
         like = _LOCAL_PREFIX + d.rstrip("/") + "/%"
         n = c.execute("SELECT COUNT(*) FROM albums WHERE hash LIKE ?", (like,)).fetchone()[0]
-        out.append({"path": d, "exists": os.path.isdir(d), "albums": n})
+        out.append({"kind": "local", "path": d, "exists": os.path.isdir(d), "albums": n})
+    for s in _cloud_sources():
+        like = f"{_CLOUD_PREFIX}{s['key']}:%"
+        n = c.execute("SELECT COUNT(*) FROM albums WHERE hash LIKE ?", (like,)).fetchone()[0]
+        out.append({"kind": "cloud", "key": s["key"], "label": s.get("label", ""),
+                    "url": s.get("url", ""), "albums": n})
     return {"sources": out, "scan": dict(_SCAN_STATE)}
 
 
 @app.post("/api/sources")
 def sources_add(req: SourceReq):
+    # облачный источник: публичная ссылка Яндекс.Диска
+    if req.url.strip():
+        key = _yd_key_from_url(req.url)
+        srcs = _cloud_sources()
+        if not any(s["key"] == key for s in srcs):
+            srcs.append({"key": key, "label": req.url.strip().rstrip("/").rsplit("/", 1)[-1] or key,
+                         "url": req.url.strip()})
+            _set_setting("cloud_sources", json.dumps(srcs))
+        return {"ok": True, "cloud_key": key}
+    # локальная папка
     p = os.path.abspath(req.path or "")
     if not p.startswith("/") or p == "/":
         raise HTTPException(400, "нужен абсолютный путь к папке")
@@ -2590,7 +2763,25 @@ def sources_add(req: SourceReq):
 
 
 @app.delete("/api/sources")
-def sources_remove(path: str, delete_albums: bool = True):
+def sources_remove(cloud_key: str = "", path: str = "", delete_albums: bool = True):
+    # облачный источник
+    if cloud_key:
+        srcs = _cloud_sources()
+        srcs = [s for s in srcs if s["key"] != cloud_key]
+        _set_setting("cloud_sources", json.dumps(srcs))
+        removed = 0
+        if delete_albums:
+            c = db()
+            like = f"{_CLOUD_PREFIX}{cloud_key}:%"
+            ids = [r["id"] for r in c.execute(
+                "SELECT id FROM albums WHERE hash LIKE ?", (like,))]
+            for aid in ids:
+                c.execute("DELETE FROM tracks WHERE album_id=?", (aid,))
+            c.execute("DELETE FROM albums WHERE hash LIKE ?", (like,))
+            c.commit()
+            removed = len(ids)
+        return {"ok": True, "albums_removed": removed}
+    # локальная папка
     p = os.path.abspath(path)
     dirs = _media_dirs()
     if p not in dirs:
@@ -2617,6 +2808,14 @@ def sources_scan(req: SourceReq | None = None):
     with _SCAN_LOCK:
         if _SCAN_STATE["running"]:
             raise HTTPException(409, "сканирование уже идёт")
+        if req and req.cloud_key:
+            src = next((s for s in _cloud_sources() if s["key"] == req.cloud_key), None)
+            if not src:
+                raise HTTPException(404, "нет такого облачного источника")
+            _SCAN_STATE.update(running=True, path=f"cloud:{src.get('label', src['key'])}",
+                               scanned=0, added=0, updated=0, errors=0)
+            threading.Thread(target=_scan_cloud_worker, args=([src],), daemon=True).start()
+            return {"ok": True, "targets": [f"cloud:{src.get('label', src['key'])}"]}
         targets = [os.path.abspath(req.path)] if req and req.path else _media_dirs()
         if not targets:
             raise HTTPException(400, "нет медиапапок для сканирования")
@@ -2933,6 +3132,8 @@ def _start_track(aid, idx, offset=0.0):
     if not (0 <= idx < len(tracks)):
         raise HTTPException(400, "нет такого трека в альбоме")
     track = tracks[idx]
+    if _is_cloud(meta["hash"]):
+        raise HTTPException(501, "воспроизведение облачного источника появится в следующем обновлении")
     # приоритизируем текущий + следующий трек (6), остальные аудио — 1 (докачаются позже),
     # не-аудио — 0: нужный файл качается первым, но весь альбом в итоге докачается.
     # best-effort: не блокирует play. Для локальных альбомов (медиапапки) не нужно.

@@ -798,6 +798,30 @@ def test_sources_add_rejects_missing_dir(tmp_path):
     _reset_oaat_state()
 
 
+def test_cloud_source_add_remove(tmp_path):
+    """Облачный источник Яндекс.Диска: добавить по ссылке → показать → удалить."""
+    _reset_oaat_state()
+    url = "https://disk.yandex.ru/d/fscW7sdEB6mCvQ"
+    with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")):
+        r = client.post("/api/sources", json={"url": url})
+        assert r.status_code == 200
+        assert r.json()["cloud_key"] == "fscW7sdEB6mCvQ"
+        srcs = client.get("/api/sources").json()["sources"]
+        assert any(s["kind"] == "cloud" and s["key"] == "fscW7sdEB6mCvQ" for s in srcs)
+        r = client.delete("/api/sources?cloud_key=fscW7sdEB6mCvQ")
+        assert r.json()["albums_removed"] == 0
+        assert client.get("/api/sources").json()["sources"] == []
+    _reset_oaat_state()
+
+
+def test_cloud_parts_and_key_from_url():
+    assert main._cloud_parts("cloud:abc123:Artist/Album") == ("abc123", "Artist/Album")
+    assert main._yd_key_from_url("https://disk.yandex.ru/d/abc123") == "abc123"
+    assert main._yd_key_from_url("https://disk.yandex.com/i/xyz99/") == "xyz99"
+    assert main._is_cloud("cloud:abc123:") is True
+    assert main._is_cloud("local:/mnt/music") is False
+
+
 def test_play_local_album_without_qbt(tmp_path):
     """Локальный альбом играет без обращения к qBittorrent."""
     _reset_oaat_state()
@@ -1066,7 +1090,8 @@ def test_setup_status_reports_missing(tmp_path):
             patch.object(main, "QB", side_effect=OSError("down")):
         body = client.get("/api/setup/status").json()
         assert body["configured"] is False
-        assert set(body["missing"]) == {"rutracker", "endpoint", "qbittorrent"}
+        # RuTracker намеренно НЕ блокирует первый запуск (опциональная надстройка)
+        assert set(body["missing"]) == {"endpoint", "qbittorrent"}
 
 
 def test_setup_status_configured(tmp_path):
