@@ -2617,7 +2617,9 @@ _BACKFILL_LOCK = threading.Lock()
 # 0.1с НЕ хватает: сам чтение тега по SMB — многосекундный блокирующий I/O,
 # поэтому пауза должна давать API окно. 1.0с + последовательные чтения
 # оставляют API ~половину времени SMB-линка.
-_BACKFILL_DELAY = 1.0
+# На локальном диске (NAS, /volume1/music) задержку можно обнулить через
+# env BACKFILL_DELAY (напр. 0.02) — иначе 41K треков тянутся ~11 часов.
+_BACKFILL_DELAY = float(os.getenv("BACKFILL_DELAY", "1.0"))
 
 
 def _read_tags_full(path):
