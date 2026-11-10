@@ -269,6 +269,12 @@ export default function SettingsModal({ open, onClose, notify }) {
   async function testLogin() {
     setTesting(true)
     try {
+      // «Проверить» должен работать с введёнными полями, а не только с уже
+      // сохранёнными: сначала сохраняем креды из формы, потом проверяем.
+      await api.saveSettings({
+        rutracker_login: login,
+        rutracker_password: password || undefined,
+      })
       const r = await api.settingsTest()
       if (r.ok) notify('Логин RuTracker работает', 'success')
       else notify(r.error || 'Логин не прошёл', 'error')
