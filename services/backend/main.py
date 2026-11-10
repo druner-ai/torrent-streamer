@@ -839,6 +839,10 @@ def _thumb_url(url: str | None, size: int = 500) -> str | None:
     return f"{m.group(1)}-{size}.jpg" if m else url
 
 
+class _MBRateLimited(Exception):
+    """MusicBrainz вернул 503 или error-тело — rate-limit/перегруз; отступаем с паузой."""
+
+
 def enrich_album(name: str) -> dict | None:
     try:
         r = requests.get(
@@ -847,8 +851,13 @@ def enrich_album(name: str) -> dict | None:
             headers={"User-Agent": MUSICBRAINZ_UA},
             timeout=10,
         )
+        if r.status_code == 503:
+            raise _MBRateLimited("HTTP 503")
         r.raise_for_status()
         data = r.json()
+        if "error" in data:
+            # MusicBrainz отдаёт {"error": "server busy"} с HTTP 200 при rate-limit
+            raise _MBRateLimited(str(data["error"]))
         releases = data.get("releases", [])
         if not releases:
             return None
@@ -877,6 +886,8 @@ def enrich_album(name: str) -> dict | None:
             except Exception:  # noqa: BLE001 — нет обложки/таймаут → None
                 cover_url = None
         return {"artist": artist, "title": title, "cover_url": cover_url}
+    except _MBRateLimited:
+        raise
     except Exception:  # noqa: BLE001 — обогащение не должно ронять добавление
         return None
 
@@ -889,9 +900,18 @@ def _enrich_covers(limit: int = 300) -> int:
             "WHERE artist IS NOT NULL AND album IS NOT NULL AND cover_url IS NULL "
             "GROUP BY release_key LIMIT ?", (limit,)).fetchall()
     n = 0
+    busy_streak = 0
     for r in rows:
         q = " ".join(x for x in (r["artist"], r["album"]) if x)
-        meta = enrich_album(q)
+        try:
+            meta = enrich_album(q)
+        except _MBRateLimited as e:
+            busy_streak += 1
+            delay = min(60, 5 * (2 ** (busy_streak - 1)))  # 5,10,20,40,60с
+            print(f"[covers] MusicBrainz busy ({e}) — пауза {delay}s", flush=True)
+            time.sleep(delay)
+            continue
+        busy_streak = 0
         time.sleep(1.05)  # MusicBrainz rate limit — 1 req/s
         if meta and meta.get("cover_url"):
             with db() as c:

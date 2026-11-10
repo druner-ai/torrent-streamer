@@ -193,6 +193,22 @@ def test_enrich_album_fetches_artist_and_cover_url():
     assert get.call_count == 2
 
 
+def test_enrich_album_raises_on_mb_503():
+    r = Mock()
+    r.status_code = 503
+    with patch("main.requests.get", return_value=r), pytest.raises(main._MBRateLimited):
+        main.enrich_album("Artist — Album")
+
+
+def test_enrich_album_raises_on_mb_error_body():
+    r = Mock()
+    r.status_code = 200
+    r.raise_for_status.return_value = None
+    r.json.return_value = {"error": "server busy"}
+    with patch("main.requests.get", return_value=r), pytest.raises(main._MBRateLimited):
+        main.enrich_album("Artist — Album")
+
+
 def test_add_does_not_crash_when_enrich_fails(tmp_path):
     with patch.object(main, "DB_PATH", str(tmp_path / "catalog.db")), patch.object(main, "QB") as QB, patch(
         "main.requests.get", side_effect=requests.exceptions.ConnectionError("boom")
