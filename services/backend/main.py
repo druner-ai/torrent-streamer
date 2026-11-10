@@ -457,8 +457,11 @@ async def lifespan(_app):
         print(f"[covers] миграция тамбнейлов: {e}", flush=True)
     _cover_thread = threading.Thread(target=_cover_worker, daemon=True)
     _cover_thread.start()
-    # бэкфилл тегов: возобновить после рестарта, если остались неразмеченные треки
-    _backfill_kick()
+    # Бэкфилл тегов НЕ автозапускаем: он читает теги с медленных монтирований
+    # (SMB/USB) и при каждом рестарте контейнера снова молотит I/O на десятки
+    # минут, деградируя API (фризы скролла). Запуск — вручную из Настроек или
+    # после скана новых источников (см. _backfill_kick в POST /api/sources/scan).
+    # _backfill_kick()
     # сервер сам виден в LAN: _soundvault._tcp для клиентов/мобильных приложений.
     # zeroconf блокирующий — из asyncio-loop зовём только из отдельного потока.
     threading.Thread(target=_mdns_register, daemon=True).start()
