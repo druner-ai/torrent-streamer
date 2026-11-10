@@ -2096,7 +2096,11 @@ def album_files(aid: int):
     save_path = None
     torrent_state = None
     local = _is_local(a["hash"])
-    if local:
+    cloud = _is_cloud(a["hash"])
+    if cloud:
+        # облачные файлы (Яндекс.Диск) доступны сразу — qBittorrent не нужен
+        files = {}
+    elif local:
         save_path = _local_dir(a["hash"])
         files = {}
     else:
@@ -2110,12 +2114,16 @@ def album_files(aid: int):
             files = {}
     out = []
     for idx, t in enumerate(tracks):
-        f = files.get(t["path"])
-        if local:
-            abs_local = os.path.join(save_path or "", t["path"])
-            progress = 1.0 if os.path.exists(abs_local) else 0.0
+        if cloud:
+            progress = 1.0
+            f = None
         else:
-            progress = f["progress"] if f else 0.0
+            f = files.get(t["path"])
+            if local:
+                abs_local = os.path.join(save_path or "", t["path"])
+                progress = 1.0 if os.path.exists(abs_local) else 0.0
+            else:
+                progress = f["progress"] if f else 0.0
         ready = bool(progress >= 1.0)
         if ready and save_path:
             abs_path = os.path.join(save_path, t["path"])

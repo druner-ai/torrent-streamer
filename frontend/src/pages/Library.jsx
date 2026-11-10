@@ -157,7 +157,8 @@ export default function Library({
     if (fFormat) list = list.filter((a) => (a.format || '') === fFormat)
     if (fYear) list = list.filter((a) => String(a.year || '').slice(0, 4) === fYear)
     if (fSource === 'folder') list = list.filter((a) => a.origin === 'folder')
-    if (fSource === 'torrent') list = list.filter((a) => a.origin !== 'folder')
+    if (fSource === 'torrent') list = list.filter((a) => a.origin === 'torrent')
+    if (fSource === 'cloud') list = list.filter((a) => a.origin === 'cloud')
     if (fFav) list = list.filter((a) => a.favorite)
     if (sort !== 'added') {
       list = [...list]
@@ -191,6 +192,7 @@ export default function Library({
         .sort((a, b) => b[0].localeCompare(a[0]))
         .slice(0, 24),
       hasFolders: albums.some((a) => a.origin === 'folder'),
+      hasCloud: albums.some((a) => a.origin === 'cloud'),
       artistCount: artists.size,
     }
   }, [albums])
@@ -299,8 +301,13 @@ export default function Library({
         <FilterDropdown label="Год" options={facets.years} value={fYear} onChange={setFYear} />
         <FilterDropdown
           label="Источник"
-          options={facets.hasFolders ? [['torrent'], ['folder']] : []}
-          labelFor={(v) => (v === 'torrent' ? 'Торренты' : 'Медиапапки')}
+          options={[
+            ...(facets.hasCloud ? [['cloud']] : []),
+            ...(facets.hasFolders ? [['torrent'], ['folder']] : []),
+          ]}
+          labelFor={(v) =>
+            v === 'torrent' ? 'Торренты' : v === 'folder' ? 'Медиапапки' : 'Облако'
+          }
           value={fSource}
           onChange={setFSource}
         />
