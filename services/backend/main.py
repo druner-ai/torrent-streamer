@@ -2495,6 +2495,25 @@ def _yd_key_from_url(url: str) -> str:
     return m.group(1)
 
 
+_YD_DOWNLOAD_CACHE: dict = {}  # (key, path) -> (href, expires)
+
+
+def _yd_download_href(key: str, path: str) -> str:
+    """download-href для облачного файла (живёт часы; кэш в памяти на 1ч)."""
+    now = time.time()
+    hit = _YD_DOWNLOAD_CACHE.get((key, path))
+    if hit and hit[1] > now:
+        return hit[0]
+    src = next((s for s in _cloud_sources() if s["key"] == key), None)
+    url = (src or {}).get("url") or f"https://disk.yandex.ru/d/{key}"
+    data = _yd_get(YANDEX_PUBLIC_API + "/download", {"public_key": url, "path": path})
+    href = data.get("href") if isinstance(data, dict) else None
+    if not href:
+        raise RuntimeError("Яндекс.Диск: не удалось получить ссылку на скачивание")
+    _YD_DOWNLOAD_CACHE[(key, path)] = (href, now + 3600)
+    return href
+
+
 def _upsert_cloud_album(c, key: str, cloud_dir: str, files: list) -> bool:
     """Создать/обновить облачный альбом. files — [{path,name,size}, ...]. True = новый."""
     h = f"{_CLOUD_PREFIX}{key}:{cloud_dir}"
@@ -2548,10 +2567,10 @@ def _scan_cloud_source(src: dict) -> None:
             continue
         time.sleep(0.2)  # вежливость к Яндексу (листинг)
         # path внутри облака хранится С leading slash ('/Artist/Album'); корень — ''.
-        def _child(name: str) -> str:
-            return (path.rstrip("/") + "/" + name) if path else "/" + name
+        def _child(base: str, name: str) -> str:
+            return (base.rstrip("/") + "/" + name) if base else "/" + name
 
-        audio = [{"path": _child(it["name"]), "name": it["name"], "size": it.get("size", 0)}
+        audio = [{"path": _child(path, it["name"]), "name": it["name"], "size": it.get("size", 0)}
                  for it in items if it.get("type") == "file"
                  and os.path.splitext(it["name"])[1].lower() in AUDIO_EXTS]
         if audio:
@@ -2565,7 +2584,7 @@ def _scan_cloud_source(src: dict) -> None:
                 _SCAN_STATE["errors"] += 1
         for it in items:
             if it.get("type") == "dir":
-                stack.append(_child(it["name"]))
+                stack.append(_child(path, it["name"]))
         scanned += 1
         if scanned % 25 == 0:
             _SCAN_STATE["scanned"] = scanned
@@ -2867,6 +2886,10 @@ def _current_tracks(aid):
     tracks = c.execute("SELECT * FROM tracks WHERE album_id=? ORDER BY path", (aid,)).fetchall()
     if not tracks:
         raise HTTPException(400, "в альбоме нет треков")
+    if _is_cloud(a["hash"]):
+        meta = {"name": a["name"], "artist": a["artist"], "cover_url": a["cover_url"],
+                "hash": a["hash"]}
+        return tracks, None, meta
     if _is_local(a["hash"]):
         save_path = _local_dir(a["hash"])
         if not os.path.isdir(save_path):
@@ -3164,7 +3187,36 @@ def _start_track(aid, idx, offset=0.0):
         raise HTTPException(400, "нет такого трека в альбоме")
     track = tracks[idx]
     if _is_cloud(meta["hash"]):
-        raise HTTPException(501, "воспроизведение облачного источника появится в следующем обновлении")
+        key, _ = _cloud_parts(meta["hash"])
+        href = _yd_download_href(key, track["path"])
+        stream_path = _wav_path(aid, idx)
+        tmp = stream_path + ".part"
+        cmd = [FFMPEG, "-y", "-i", href, "-c:a", _wav_codec_for(href), "-f", "wav", tmp]
+        conv = subprocess.run(cmd, check=False, capture_output=True, timeout=600)
+        if conv.returncode != 0:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+            raise HTTPException(500, f"ffmpeg не смог декодировать облачный трек: "
+                                     f"{conv.stderr.decode(errors='replace')[-200:]}")
+        os.replace(tmp, stream_path)
+        title = _clean_track_name(track["name"])
+        resp = _ts_cmd({"cmd": "play", "path": stream_path,
+                        "title": title, "artist": meta["artist"], "album": meta["name"]})
+        if not resp.get("ok"):
+            raise HTTPException(500, f"контроллер: {resp.get('error', 'нет ответа')}")
+        if offset > 0:
+            _ts_cmd({"cmd": "seek", "sec": offset})
+        _OAAT_ALBUM_ID = aid
+        _OAAT_TRACK_INDEX = idx
+        _OAAT_TRACK_NAME = track["name"]
+        _OAAT_TRACK_TITLE = title
+        _OAAT_DURATION = resp.get("duration")
+        _OAAT_ALBUM_NAME = meta["name"]
+        _OAAT_ARTIST = meta["artist"]
+        _OAAT_COVER_URL = meta["cover_url"]
+        _OAAT_FORMAT = None
+        return {"ok": True, "album_id": aid, "track_index": idx,
+                "file": os.path.basename(track["path"])}
     # приоритизируем текущий + следующий трек (6), остальные аудио — 1 (докачаются позже),
     # не-аудио — 0: нужный файл качается первым, но весь альбом в итоге докачается.
     # best-effort: не блокирует play. Для локальных альбомов (медиапапки) не нужно.
