@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api } from './api.js'
 import { usePolling } from './hooks/usePolling.js'
 import AlbumModal from './components/AlbumModal.jsx'
@@ -64,6 +64,11 @@ export default function App() {
   // null = мастер не показываем; массив missing = показать шаг за шагом
   const [setupMissing, setSetupMissing] = useState(null)
   const [authRequired, setAuthRequired] = useState(false)
+  // Позиция скролла библиотеки: при запуске альбома ре-рендер может сбросить
+  // скролл в начало — храним последнюю позицию и восстанавливаем после смены
+  // играющего альбома (см. useLayoutEffect ниже).
+  const mainScrollRef = useRef(null)
+  const scrollTopRef = useRef(0)
 
   useEffect(() => {
     if (sessionStorage.getItem('sv_setup_skipped')) return
@@ -457,6 +462,13 @@ export default function App() {
     isPlayingAlbum,
   }
 
+  // Восстановить позицию скролла после смены играющего альбома: ре-рендер
+  // при старте трека может сбросить scrollTop контейнера в начало.
+  useLayoutEffect(() => {
+    const el = mainScrollRef.current
+    if (el) el.scrollTop = scrollTopRef.current
+  }, [player.album_id])
+
   useEffect(() => {
     const onUnauth = () => setAuthRequired(true)
     window.addEventListener('sv:unauthorized', onUnauth)
@@ -504,6 +516,10 @@ export default function App() {
         />
 
         <div
+          ref={mainScrollRef}
+          onScroll={(e) => {
+            scrollTopRef.current = e.currentTarget.scrollTop
+          }}
           className={`min-h-0 flex-1 overflow-y-auto bg-bg-main ${
             hasTrack ? 'pb-32' : 'pb-16'
           } md:pb-0`}
