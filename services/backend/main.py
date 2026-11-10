@@ -1150,10 +1150,13 @@ def settings_test():
 
 @app.get("/api/setup/status")
 def setup_status():
-    """Мастер первого запуска: какие шаги ещё не настроены."""
+    """Мастер первого запуска: какие шаги ещё не настроены.
+
+    RuTracker намеренно НЕ блокирует первый запуск: это опциональная
+    надстройка (витрина трекера), настраивается позже в Settings.
+    Базовый SoundVault = локальная библиотека (qbt) + эндпоинты.
+    """
     missing = []
-    if not (_rutracker_login() and _rutracker_password()):
-        missing.append("rutracker")
     if not _configured_endpoints() and not _mdns_services():
         missing.append("endpoint")
     try:

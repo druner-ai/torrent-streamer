@@ -68,6 +68,7 @@ export default function Tracker({ notify, onAlbumAdded }) {
   const [artistsTotal, setArtistsTotal] = useState(0)
   const [artistsLoading, setArtistsLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [rtConfigured, setRtConfigured] = useState(null) // null = ещё не проверили
 
   const loadTree = async () => {
     try {
@@ -81,6 +82,13 @@ export default function Tracker({ notify, onAlbumAdded }) {
   useEffect(() => {
     loadTree()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    api
+      .rutrackerStatus()
+      .then((d) => setRtConfigured(!!(d.login_set && d.password_set)))
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -887,8 +895,10 @@ export default function Tracker({ notify, onAlbumAdded }) {
               </div>
               {tree.length === 0 ? (
                 <div className="flex flex-col items-center gap-3 py-10">
-                  <p className="text-[14px] text-text-secondary">
-                    Дерево ещё не загружено — нажмите «Обновить», чтобы подтянуть разделы с RuTracker.
+                  <p className="max-w-xs text-center text-[14px] text-text-secondary">
+                    {rtConfigured === false
+                      ? 'RuTracker не настроен — укажите логин и пароль в «Настройках», чтобы просматривать раздачи.'
+                      : 'Дерево ещё не загружено — нажмите «Обновить», чтобы подтянуть разделы с RuTracker.'}
                   </p>
                 </div>
               ) : (

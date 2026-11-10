@@ -17,8 +17,6 @@ const inputCls =
 export default function SetupWizard({ missing, onDone, onSkip, notify }) {
   const [step, setStep] = useState(0)
   const [busy, setBusy] = useState(false)
-  const [login, setLogin] = useState('')
-  const [password, setPassword] = useState('')
   const [qbtUrl, setQbtUrl] = useState('')
   const [qbtUser, setQbtUser] = useState('')
   const [qbtPass, setQbtPass] = useState('')
@@ -40,24 +38,6 @@ export default function SetupWizard({ missing, onDone, onSkip, notify }) {
   function next() {
     if (step + 1 >= missing.length) onDone()
     else setStep(step + 1)
-  }
-
-  async function saveRutracker() {
-    setBusy(true)
-    try {
-      await api.saveSettings({ rutracker_login: login, rutracker_password: password })
-      const r = await api.settingsTest()
-      if (r.ok) {
-        notify('RuTracker: логин работает', 'success')
-        next()
-      } else {
-        notify(r.error || 'Логин не прошёл', 'error')
-      }
-    } catch (e) {
-      notify(e.message, 'error')
-    } finally {
-      setBusy(false)
-    }
   }
 
   async function saveQbt() {
@@ -119,40 +99,6 @@ export default function SetupWizard({ missing, onDone, onSkip, notify }) {
         <p className="mb-5 text-[12px] text-text-muted">
           Шаг {step + 1} из {missing.length}
         </p>
-
-        {item === 'rutracker' && (
-          <div>
-            <h3 className="mb-1 text-[14px] font-medium text-text-primary">Источник: RuTracker</h3>
-            <p className="mb-4 text-[12px] text-text-muted">
-              Логин и пароль нужны, чтобы скачивать раздачи. Проверяются сразу после сохранения.
-            </p>
-            <label className="mb-1 block text-[12.5px] text-text-secondary">Логин</label>
-            <input
-              value={login}
-              onChange={(e) => setLogin(e.target.value)}
-              placeholder="логин RuTracker"
-              className={`mb-3 ${inputCls}`}
-            />
-            <label className="mb-1 block text-[12.5px] text-text-secondary">Пароль</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="пароль"
-              autoComplete="new-password"
-              className={inputCls}
-            />
-            <button
-              type="button"
-              onClick={saveRutracker}
-              disabled={busy || !login || !password}
-              className="mt-4 flex w-full items-center justify-center gap-2 rounded-sm bg-primary px-4 py-2 text-[13px] font-medium text-on-primary transition-colors hover:bg-primary-hover disabled:opacity-60"
-            >
-              {busy && <Loader2 size={14} className="animate-spin" />}
-              Сохранить и проверить
-            </button>
-          </div>
-        )}
 
         {item === 'qbittorrent' && (
           <div>
