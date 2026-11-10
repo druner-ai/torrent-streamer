@@ -1139,8 +1139,10 @@ def settings_test():
         return {"ok": False, "error": "не задан логин/пароль"}
     try:
         cookies = _rutracker_cookies()
+    except RuntimeError as e:
+        return {"ok": False, "error": f"проверить логин не удалось: {e}"}
     except requests.RequestException as e:
-        return {"ok": False, "error": f"логин не прошёл: {e}"}
+        return {"ok": False, "error": f"проверить логин не удалось: {e}"}
     has_session = any(c.get("name") == "bb_session" for c in cookies)
     return {"ok": has_session,
             "error": "" if has_session else "логин не прошёл (нет сессии bb_session)"}
