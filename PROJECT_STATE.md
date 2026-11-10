@@ -119,12 +119,15 @@
   способами, обновление — одним. Self-update-канал закладывается в Фазу 3.
 - **План рефакторинга (Фаза 1, поэтапно)**:
   1.1 код: timeout на все `QB`-запросы (fix «qbt завис → backend встал») — beta.15;
-  1.2 авто-пароль qbt из env; 1.3 full-профиль в дефолт (qbt+FlareSolverr+MPD в стеке);
-  1.4 `network_mode: host` → bridge. Каждый пункт = отдельный коммит + beta + проверка.
-- **Фаза 2** — self-host «один пакет»: `install.sh` = только подготовка хоста, README —
-  один путь, RuTracker-витрина — опциональная надстройка (не шаг 1 мастера).
-- **Фаза 3** — флеш-образ/флот: Balena (`Dockerfile.template` + `balena.yml` +
-  `INGRESS_PORT` + `resin-data`) + self-update-канал на registry Андрея.
+  1.2 авто-пароль qbt из env (init-хук, PBKDF2) — beta.16;
+  1.3 full-профиль в дефолт (qbt+FlareSolverr в стек) + MPD вычищен (не в тракте) — beta.17;
+  1.4 `network_mode: host` → bridge — **ОТМЕНЕНО (2026-11-10)**: host-сеть необходима для звука
+      (endpoint'ы по loopback `127.0.0.1:9740` и mDNS-мультикасту не видны из bridge), а Balena
+      host-networking поддерживает (`network_mode: host` в balena docker-compose). Пункт снят.
+- **Фаза 2** — self-host «один пакет»: `install.sh` = только подготовка хоста (готово в 1.3),
+  README — один путь, RuTracker-витрина — опциональная надстройка (не шаг 1 мастера).
+- **Фаза 3** — флеш-образ/флот: Balena (`Dockerfile.template` + `balena.yml`, `network_mode: host`,
+  `resin-data`, порт через `INGRESS_PORT`) + self-update-канал на registry Андрея.
 - **Промо-сайт** (отдельная задача, до выхода «одного пакета»): лендинг с описанием
   фич SoundVault, пошаговой процедурой установки (self-host + образ) и ссылками на
   необходимые файлы (готовый образ, `.env`-шаблон, `install.sh`, endpoint-установщики
