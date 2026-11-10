@@ -125,3 +125,8 @@
   один путь, RuTracker-витрина — опциональная надстройка (не шаг 1 мастера).
 - **Фаза 3** — флеш-образ/флот: Balena (`Dockerfile.template` + `balena.yml` +
   `INGRESS_PORT` + `resin-data`) + self-update-канал на registry Андрея.
+- **Промо-сайт** (отдельная задача, до выхода «одного пакета»): лендинг с описанием
+  фич SoundVault, пошаговой процедурой установки (self-host + образ) и ссылками на
+  необходимые файлы (готовый образ, `.env`-шаблон, `install.sh`, endpoint-установщики
+  `tune-bridge` для macOS/Linux/Windows). Размещение — на VPS B под своим доменом
+  (напр. `soundvault.tochenyi.ru`), рядом с `music.tochenyi.ru`/`beta`.
