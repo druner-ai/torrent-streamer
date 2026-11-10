@@ -35,8 +35,8 @@ into a persistent library, and play bit-perfectly to OAAT audio endpoints discov
 
 ## Быстрый старт
 
-Предварительно: только Docker. qBittorrent можно не ставить отдельно — есть
-режим «Полный стек» ниже (или используйте свой qbt-nox на хосте, WebUI на 8080).
+Предварительно: только Docker. Одна команда поднимает весь серверный стек —
+backend + qBittorrent + FlareSolverr (отдельно ничего ставить не нужно):
 
 ```bash
 git clone https://github.com/druner-ai/torrent-streamer.git
@@ -46,17 +46,13 @@ docker compose up -d --build
 ```
 
 Откройте `http://<хост>:8000`. При первом запуске мастер настройки проведёт по шагам:
-подключение к qBittorrent, логин трекера, выбор аудио-эндпоинта.
+логин трекера, выбор аудио-эндпоинта.
 
-Переменные окружения — см. `.env.example` (все опциональны, кроме qBittorrent).
+Переменные окружения — см. `.env.example` (все опциональны).
 
 ## Полный стек (qBittorrent + FlareSolverr в контейнерах)
 
-Одна команда поднимает весь серверный стек — отдельно ставить qbt не нужно:
-
-```bash
-docker compose --profile full up -d --build
-```
+Поднимается той же командой `docker compose up -d` (это дефолт, профиль не нужен):
 
 - **qBittorrent**: WebUI на `127.0.0.1:8080` (loopback — наружу не торчит),
   логин `admin`. Пароль задаётся в `.env` (`QBT_PASS`) и при ПЕРВОМ старте
@@ -73,6 +69,23 @@ docker compose --profile full up -d --build
   `FLARESOLVERR_URL` по умолчанию.
 - Prowlarr (поиск по индексаторам) остаётся внешним и опциональным —
   `PROWLARR_URL`/`PROWLARR_API_KEY` в `.env`.
+
+## Внешний qBittorrent (для существующих хостов)
+
+Если qBittorrent (и/или FlareSolverr) уже работают на хосте вне Docker (напр.
+`qbittorrent-nox`, WebUI на 8080) — не поднимайте их контейнерные версии. Создайте
+`docker-compose.override.yml`:
+
+```yaml
+services:
+  qbittorrent:
+    profiles: ["disabled"]
+  flaresolverr:
+    profiles: ["disabled"]
+```
+
+Тогда `docker compose up -d` поднимет только backend, а он достучится до внешнего
+qbt по `127.0.0.1:8080` (задайте `QBT_PASS` тот же, что у qbt-nox).
 
 ## Эндпоинты (звук)
 

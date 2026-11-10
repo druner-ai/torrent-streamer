@@ -1,15 +1,14 @@
 # Torrent-streamer — self-hosted аудио-стример с торрентов.
-# Развёртывание: ./scripts/install.sh && docker compose up -d
+# Развёртывание «из коробки»: ./scripts/install.sh && docker compose up -d
+#   → поднимается весь стек: backend + qBittorrent + FlareSolverr.
 #
-# Полный стек ОДНОЙ командой (qBittorrent + FlareSolverr в контейнерах):
-#   docker compose --profile full up -d
-# (см. README «Полный стек» — пароль qbt, DOWNLOADS_DIR, лимиты FlareSolverr.)
+# (см. README — пароль qbt из .env, DOWNLOADS_DIR, лимиты FlareSolverr.)
 #
-# Альтернатива: downloader (qbittorrent-nox) и плеер (MPD) на ХОСТЕ (не здесь):
-#   - qbittorrent-nox — качает торренты (sequential), работает за CGNAT (18 MiB/s проверено).
-#   - MPD — bit-perfect вывод через ALSA/USB-DAC.
+# Альтернатива для существующих хостов: downloader (qbittorrent-nox) уже стоит на
+#   хосте (не в контейнере) — тогда отключите контейнерные qbittorrent/flaresolverr
+#   через docker-compose.override.yml (см. README «Внешний qBittorrent»).
 # Backend (FastAPI) работает в Docker с network_mode: host — ему нужен доступ к
-#   MPD (127.0.0.1:6600) и qbittorrent WebUI (127.0.0.1:8080) на хосте.
+#   qbittorrent WebUI (127.0.0.1:8080) на хосте. MPD не используется.
 
 services:
   backend:
@@ -99,14 +98,11 @@ services:
     depends_on:
       - backend
 
-  # Полный стек (профиль "full"): qBittorrent + FlareSolverr рядом с backend.
-  #   docker compose --profile full up -d
-  # qbt WebUI: 127.0.0.1:8080 (loopback), логин admin; временный пароль ПЕРВОГО
-  # старта — в `docker compose logs qbittorrent` (его же можно ввести в мастере
-  # настройки SoundVault; смену пароля qbt поддерживает только через свой WebUI/API).
+  # qBittorrent в контейнере — входит в дефолтный стек (без --profile).
+  # qbt WebUI: 127.0.0.1:8080 (loopback), логин admin; пароль из QBT_PASS (init-хук
+  # ставит при первом старте — см. services/qbittorrent/set-webui-password.sh).
   qbittorrent:
     image: linuxserver/qbittorrent:5.3.0
-    profiles: ["full"]
     container_name: torrent-streamer-qbittorrent
     environment:
       - PUID=1000
@@ -132,11 +128,10 @@ services:
     restart: unless-stopped
 
   # Обход Cloudflare для RuTracker (нужен для витрины трекера и скачивания).
-  # Лимит 1 CPU / 1 ГБ — как на боевом NUC: решение CF-challenge не должно
-  # мешать звуку. Только loopback — наружу не торчит.
+  # Входит в дефолтный стек. Лимит 1 CPU / 1 ГБ — как на боевом NUC: решение
+  # CF-challenge не должно мешать звуку. Только loopback — наружу не торчит.
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
-    profiles: ["full"]
     container_name: torrent-streamer-flaresolverr
     environment:
       - LOG_LEVEL=info
